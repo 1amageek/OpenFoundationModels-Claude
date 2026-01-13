@@ -1,0 +1,57 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Swift Package Manager
+/.build
+/Packages
+Package.resolved
+
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcodeproj/project.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.playground/timeline.xctimeline
+*.playground/playground.xcworkspace
+
+# SwiftPM
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.swiftpm/xcode/package.xcworkspace/xcshareddata/
+
+# Environment and Secrets
+.env
+.env.*
+.env.local
+.env.*.local
+*.env
+
+# API Keys and Credentials
+.netrc
+secrets.json
+credentials.json
+api_keys.json
+*.secret
+*.secrets
+*-secret.json
+*-secrets.json
+
+# Test configuration with secrets
+TestConfig.swift
+TestSecrets.swift
+IntegrationTestConfig.swift
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+
+# Temporary files
+*.tmp
+*.temp
+*.log

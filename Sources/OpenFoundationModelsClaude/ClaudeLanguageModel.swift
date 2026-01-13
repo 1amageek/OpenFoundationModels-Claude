@@ -70,8 +70,12 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
         // Check for response format (structured output)
         let responseFormat = TranscriptConverter.extractResponseFormat(from: transcript)
 
+        // Convert GenerationSchema to Claude OutputFormat if present
+        let outputFormat = responseFormat.flatMap { convertToOutputFormat($0) }
+        let betaHeaders: [String]? = outputFormat != nil ? ["structured-outputs-2025-11-13"] : nil
+
         // Build request
-        var request = MessagesRequest(
+        let request = MessagesRequest(
             model: modelName,
             messages: messages,
             maxTokens: maxTokens,
@@ -81,15 +85,11 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
             stream: false,
             temperature: claudeOptions.temperature,
             topK: claudeOptions.topK,
-            topP: claudeOptions.topP
+            topP: claudeOptions.topP,
+            outputFormat: outputFormat
         )
 
-        // If response format is specified, add instructions for JSON output
-        if let schema = responseFormat {
-            request = addSchemaInstructions(to: request, schema: schema)
-        }
-
-        let response: MessagesResponse = try await httpClient.send(request, to: "/v1/messages")
+        let response: MessagesResponse = try await httpClient.send(request, to: "/v1/messages", betaHeaders: betaHeaders)
 
         // Check for tool calls
         let toolUseBlocks = response.content.compactMap { block -> ToolUseBlock? in
@@ -125,8 +125,12 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                     // Check for response format
                     let responseFormat = TranscriptConverter.extractResponseFormat(from: transcript)
 
+                    // Convert GenerationSchema to Claude OutputFormat if present
+                    let outputFormat = responseFormat.flatMap { self.convertToOutputFormat($0) }
+                    let betaHeaders: [String]? = outputFormat != nil ? ["structured-outputs-2025-11-13"] : nil
+
                     // Build request
-                    var request = MessagesRequest(
+                    let request = MessagesRequest(
                         model: modelName,
                         messages: messages,
                         maxTokens: maxTokens,
@@ -136,15 +140,11 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                         stream: true,
                         temperature: claudeOptions.temperature,
                         topK: claudeOptions.topK,
-                        topP: claudeOptions.topP
+                        topP: claudeOptions.topP,
+                        outputFormat: outputFormat
                     )
 
-                    // If response format is specified, add instructions for JSON output
-                    if let schema = responseFormat {
-                        request = addSchemaInstructions(to: request, schema: schema)
-                    }
-
-                    let streamResponse = await httpClient.stream(request, to: "/v1/messages")
+                    let streamResponse = await httpClient.stream(request, to: "/v1/messages", betaHeaders: betaHeaders)
 
                     var accumulatedText = ""
                     var accumulatedToolCalls: [(id: String, name: String, input: String)] = []
@@ -153,13 +153,14 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
 
                     for try await event in streamResponse {
                         switch event {
+                        case .messageStart:
+                            break
+
                         case .contentBlockStart(let startEvent):
                             switch startEvent.contentBlock {
                             case .text:
-                                // Text block started
                                 break
                             case .toolUse(let toolUseStart):
-                                // Tool use block started
                                 currentToolCallIndex = accumulatedToolCalls.count
                                 accumulatedToolCalls.append((
                                     id: toolUseStart.id,
@@ -167,7 +168,6 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                                     input: ""
                                 ))
                             case .thinking:
-                                // Thinking block started (Extended Thinking)
                                 break
                             }
 
@@ -175,7 +175,8 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                             switch deltaEvent.delta {
                             case .textDelta(let textDelta):
                                 accumulatedText += textDelta.text
-                                let entry = createResponseEntry(content: textDelta.text)
+                                // Yield accumulated content for structured output support
+                                let entry = createResponseEntry(content: accumulatedText)
                                 continuation.yield(entry)
                                 hasYieldedContent = true
 
@@ -185,16 +186,17 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                                 }
 
                             case .thinkingDelta:
-                                // Extended thinking content (not yielded to user)
                                 break
 
                             case .signatureDelta:
-                                // Signature for thinking block (not yielded to user)
                                 break
                             }
 
                         case .contentBlockStop:
                             currentToolCallIndex = nil
+
+                        case .messageDelta:
+                            break
 
                         case .messageStop:
                             // If we accumulated tool calls, yield them
@@ -218,7 +220,7 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                                 errorEvent.error.message.data(using: .utf8)
                             )
 
-                        default:
+                        case .ping:
                             break
                         }
                     }
@@ -319,40 +321,115 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
         )
     }
 
-    /// Add schema instructions to request for structured output
-    private func addSchemaInstructions(to request: MessagesRequest, schema: GenerationSchema) -> MessagesRequest {
-        // Encode schema to JSON
+    /// Convert GenerationSchema to Claude's native OutputFormat for structured outputs
+    private func convertToOutputFormat(_ schema: GenerationSchema) -> OutputFormat? {
+        // GenerationSchema is Encodable, so we can serialize it to JSON
+        // and then convert to Claude's JSONSchema format
         guard let jsonData = try? JSONEncoder().encode(schema),
-              let schemaString = String(data: jsonData, encoding: .utf8) else {
-            return request
+              let schemaDict = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            return nil
         }
 
-        // Add schema instruction to system prompt
-        let schemaInstruction = """
+        // Convert the serialized schema to Claude's JSONSchema format
+        let jsonSchema = convertDictToJSONSchema(schemaDict)
+        return OutputFormat(schema: jsonSchema)
+    }
 
-        You must respond with a JSON object that matches this exact schema:
+    /// Convert a dictionary representation of GenerationSchema to JSONSchema
+    private func convertDictToJSONSchema(_ dict: [String: Any]) -> JSONSchema {
+        var properties: [String: JSONSchemaProperty] = [:]
+        var requiredFields: [String] = []
 
-        ```json
-        \(schemaString)
-        ```
+        // Extract properties from the schema dictionary
+        // GenerationSchema encodes properties as a dictionary { "name": { schema } }
+        if let propsDict = dict["properties"] as? [String: [String: Any]] {
+            for (name, propDict) in propsDict {
+                let prop = convertDictToJSONSchemaProperty(propDict)
+                properties[name] = prop
+            }
+        }
 
-        Provide only the JSON response with no additional text or explanation.
-        """
+        // Extract required fields
+        if let required = dict["required"] as? [String] {
+            requiredFields = required
+        } else {
+            // If no required array, assume all properties are required
+            requiredFields = Array(properties.keys)
+        }
 
-        let newSystem = (request.system ?? "") + schemaInstruction
-
-        return MessagesRequest(
-            model: request.model,
-            messages: request.messages,
-            maxTokens: request.maxTokens,
-            system: newSystem,
-            tools: request.tools,
-            toolChoice: request.toolChoice,
-            stream: request.stream,
-            temperature: request.temperature,
-            topK: request.topK,
-            topP: request.topP
+        return JSONSchema(
+            type: "object",
+            properties: properties.isEmpty ? nil : properties,
+            required: requiredFields.isEmpty ? nil : requiredFields,
+            additionalProperties: false,
+            description: dict["description"] as? String
         )
+    }
+
+    /// Convert a property dictionary to JSONSchemaProperty
+    private func convertDictToJSONSchemaProperty(_ dict: [String: Any]) -> JSONSchemaProperty {
+        let typeName = dict["type"] as? String ?? "object"
+        let description = dict["description"] as? String
+
+        // Handle arrays with items
+        if typeName == "array" {
+            if let itemsDict = dict["items"] as? [String: Any] {
+                let itemProp = convertDictToJSONSchemaProperty(itemsDict)
+                return JSONSchemaProperty(
+                    type: "array",
+                    description: description,
+                    items: itemProp
+                )
+            } else {
+                // Array without items schema
+                return JSONSchemaProperty(
+                    type: "array",
+                    description: description,
+                    items: JSONSchemaProperty(type: "string")
+                )
+            }
+        }
+
+        // Handle nested objects with properties
+        if typeName == "object" {
+            if let nestedPropsDict = dict["properties"] as? [String: [String: Any]] {
+                var nested: [String: JSONSchemaProperty] = [:]
+                for (name, propDict) in nestedPropsDict {
+                    nested[name] = convertDictToJSONSchemaProperty(propDict)
+                }
+                let nestedRequired = dict["required"] as? [String] ?? Array(nested.keys)
+                return JSONSchemaProperty(
+                    type: "object",
+                    description: description,
+                    properties: nested.isEmpty ? nil : nested,
+                    required: nestedRequired.isEmpty ? nil : nestedRequired,
+                    additionalProperties: false
+                )
+            }
+        }
+
+        // Simple types: string, number, integer, boolean
+        return JSONSchemaProperty(
+            type: typeName,
+            description: description
+        )
+    }
+
+    /// Map Swift type names to JSON Schema types
+    private func mapSwiftTypeToJSONType(_ swiftType: String) -> String {
+        let lowercased = swiftType.lowercased()
+        if lowercased.contains("string") {
+            return "string"
+        } else if lowercased.contains("int") {
+            return "integer"
+        } else if lowercased.contains("double") || lowercased.contains("float") {
+            return "number"
+        } else if lowercased.contains("bool") {
+            return "boolean"
+        } else if lowercased.contains("array") || swiftType.hasPrefix("[") {
+            return "array"
+        }
+        return "object"
     }
 }
 

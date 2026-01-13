@@ -25,7 +25,8 @@ public actor ClaudeHTTPClient {
     /// Send a request and decode the response
     public func send<Request: Encodable, Response: Decodable>(
         _ request: Request,
-        to endpoint: String
+        to endpoint: String,
+        betaHeaders: [String]? = nil
     ) async throws -> Response {
         let url = configuration.baseURL.appendingPathComponent(endpoint)
 
@@ -34,6 +35,9 @@ public actor ClaudeHTTPClient {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         urlRequest.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
         urlRequest.setValue(configuration.apiVersion, forHTTPHeaderField: "anthropic-version")
+        if let betaHeaders = betaHeaders, !betaHeaders.isEmpty {
+            urlRequest.setValue(betaHeaders.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
+        }
         urlRequest.httpBody = try encoder.encode(request)
 
         do {
@@ -64,9 +68,11 @@ public actor ClaudeHTTPClient {
     /// Stream a request with Server-Sent Events (SSE)
     func stream<Request: Encodable & Sendable>(
         _ request: Request,
-        to endpoint: String
+        to endpoint: String,
+        betaHeaders: [String]? = nil
     ) -> AsyncThrowingStream<StreamingEvent, Error> {
-        AsyncThrowingStream { continuation in
+        let betaHeadersCopy = betaHeaders
+        return AsyncThrowingStream { continuation in
             Task {
                 do {
                     let url = configuration.baseURL.appendingPathComponent(endpoint)
@@ -76,6 +82,9 @@ public actor ClaudeHTTPClient {
                     urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     urlRequest.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
                     urlRequest.setValue(configuration.apiVersion, forHTTPHeaderField: "anthropic-version")
+                    if let betaHeaders = betaHeadersCopy, !betaHeaders.isEmpty {
+                        urlRequest.setValue(betaHeaders.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
+                    }
                     urlRequest.httpBody = try encoder.encode(request)
 
                     let (asyncBytes, response) = try await session.bytes(for: urlRequest)

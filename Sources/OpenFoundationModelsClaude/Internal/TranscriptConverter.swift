@@ -18,6 +18,9 @@ internal struct TranscriptConverter {
         var messages: [Message] = []
         var systemPrompt: String? = nil
         var pendingToolResults: [ContentBlock] = []
+        // Track tool call IDs to match with tool outputs
+        // Claude requires tool_result to reference the tool_use ID, not a separate ID
+        var pendingToolCallIds: [String] = []
 
         for entry in transcript._entries {
             switch entry {
@@ -48,12 +51,22 @@ internal struct TranscriptConverter {
                 // Convert tool calls to assistant message with tool_use blocks
                 let blocks = convertToolCallsToBlocks(toolCalls)
                 messages.append(Message(role: .assistant, content: blocks))
+                // Store the tool call IDs for matching with subsequent tool outputs
+                pendingToolCallIds = toolCalls._calls.map { $0.id }
 
             case .toolOutput(let toolOutput):
                 // Accumulate tool results to be sent as a user message
+                // Use the tool call ID from the pending list, not the tool output's own ID
                 let content = extractText(from: toolOutput.segments)
+                let toolUseId: String
+                if !pendingToolCallIds.isEmpty {
+                    toolUseId = pendingToolCallIds.removeFirst()
+                } else {
+                    // Fallback: try to find matching tool call by tool name
+                    toolUseId = toolOutput.id
+                }
                 let resultBlock = ContentBlock.toolResult(ToolResultBlock(
-                    toolUseId: toolOutput.id,
+                    toolUseId: toolUseId,
                     content: content
                 ))
                 pendingToolResults.append(resultBlock)

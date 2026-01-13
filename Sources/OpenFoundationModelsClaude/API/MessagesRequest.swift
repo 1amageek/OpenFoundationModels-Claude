@@ -15,6 +15,7 @@ struct MessagesRequest: Codable, Sendable {
     let stopSequences: [String]?
     let metadata: RequestMetadata?
     let thinking: ThinkingConfig?
+    let outputFormat: OutputFormat?
 
     init(
         model: String,
@@ -29,7 +30,8 @@ struct MessagesRequest: Codable, Sendable {
         topP: Double? = nil,
         stopSequences: [String]? = nil,
         metadata: RequestMetadata? = nil,
-        thinking: ThinkingConfig? = nil
+        thinking: ThinkingConfig? = nil,
+        outputFormat: OutputFormat? = nil
     ) {
         self.model = model
         self.messages = messages
@@ -44,6 +46,7 @@ struct MessagesRequest: Codable, Sendable {
         self.stopSequences = stopSequences
         self.metadata = metadata
         self.thinking = thinking
+        self.outputFormat = outputFormat
     }
 
     enum CodingKeys: String, CodingKey {
@@ -53,6 +56,95 @@ struct MessagesRequest: Codable, Sendable {
         case topK = "top_k"
         case topP = "top_p"
         case stopSequences = "stop_sequences"
+        case outputFormat = "output_format"
+    }
+}
+
+/// Output format for structured outputs
+struct OutputFormat: Codable, Sendable {
+    let type: String
+    let schema: JSONSchema
+
+    init(schema: JSONSchema) {
+        self.type = "json_schema"
+        self.schema = schema
+    }
+}
+
+/// JSON Schema for structured outputs
+struct JSONSchema: Codable, Sendable {
+    let type: String
+    let properties: [String: JSONSchemaProperty]?
+    let required: [String]?
+    let additionalProperties: Bool?
+    let items: JSONSchemaProperty?
+    let description: String?
+
+    init(
+        type: String,
+        properties: [String: JSONSchemaProperty]? = nil,
+        required: [String]? = nil,
+        additionalProperties: Bool? = false,
+        items: JSONSchemaProperty? = nil,
+        description: String? = nil
+    ) {
+        self.type = type
+        self.properties = properties
+        self.required = required
+        self.additionalProperties = additionalProperties
+        self.items = items
+        self.description = description
+    }
+}
+
+/// JSON Schema property definition
+struct JSONSchemaProperty: Codable, Sendable {
+    let type: String?
+    let description: String?
+    let items: JSONSchemaPropertyBox?
+    let properties: [String: JSONSchemaProperty]?
+    let required: [String]?
+    let additionalProperties: Bool?
+    let `enum`: [String]?
+
+    init(
+        type: String? = nil,
+        description: String? = nil,
+        items: JSONSchemaProperty? = nil,
+        properties: [String: JSONSchemaProperty]? = nil,
+        required: [String]? = nil,
+        additionalProperties: Bool? = nil,
+        enumValues: [String]? = nil
+    ) {
+        self.type = type
+        self.description = description
+        self.items = items.map { JSONSchemaPropertyBox($0) }
+        self.properties = properties
+        self.required = required
+        self.additionalProperties = additionalProperties
+        self.enum = enumValues
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type, description, items, properties, required, additionalProperties
+        case `enum` = "enum"
+    }
+}
+
+/// Box wrapper to handle recursive JSONSchemaProperty
+final class JSONSchemaPropertyBox: Codable, @unchecked Sendable {
+    let value: JSONSchemaProperty
+
+    init(_ value: JSONSchemaProperty) {
+        self.value = value
+    }
+
+    required init(from decoder: Decoder) throws {
+        self.value = try JSONSchemaProperty(from: decoder)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try value.encode(to: encoder)
     }
 }
 

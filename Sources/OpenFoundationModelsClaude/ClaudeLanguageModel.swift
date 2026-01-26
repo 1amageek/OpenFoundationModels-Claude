@@ -104,6 +104,10 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
         }
 
         // Convert response to Transcript.Entry
+        // Use schema-aware parsing if response format was specified
+        if let schema = responseFormat {
+            return createResponseEntry(from: response, schema: schema)
+        }
         return createResponseEntry(from: response)
     }
 
@@ -203,6 +207,25 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                             if !accumulatedToolCalls.isEmpty {
                                 let entry = createToolCallsEntry(from: accumulatedToolCalls)
                                 continuation.yield(entry)
+                            }
+
+                            // Yield final content with schema-aware parsing if available
+                            if !accumulatedText.isEmpty && accumulatedToolCalls.isEmpty {
+                                if let schema = responseFormat,
+                                   let generatedContent = self.parseJSONWithSchema(accumulatedText, schema: schema) {
+                                    let entry = Transcript.Entry.response(
+                                        Transcript.Response(
+                                            id: UUID().uuidString,
+                                            assetIDs: [],
+                                            segments: [.structure(Transcript.StructuredSegment(
+                                                id: UUID().uuidString,
+                                                source: "claude",
+                                                content: generatedContent
+                                            ))]
+                                        )
+                                    )
+                                    continuation.yield(entry)
+                                }
                             }
 
                             // Handle empty response case
@@ -321,6 +344,203 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
         )
     }
 
+    // MARK: - Schema-Aware Response Entry Creation
+
+    /// Create response entry using schema for correct GeneratedContent construction
+    /// - Parameters:
+    ///   - response: The Claude API response
+    ///   - schema: The GenerationSchema to use for parsing
+    /// - Returns: A Transcript.Entry with properly typed GeneratedContent
+    private func createResponseEntry(from response: MessagesResponse, schema: GenerationSchema) -> Transcript.Entry {
+        var textContent = ""
+
+        for block in response.content {
+            if case .text(let textBlock) = block {
+                textContent += textBlock.text
+            }
+        }
+
+        // Use schema-aware parsing to construct correct GeneratedContent
+        if let generatedContent = parseJSONWithSchema(textContent, schema: schema) {
+            return .response(
+                Transcript.Response(
+                    id: UUID().uuidString,
+                    assetIDs: [],
+                    segments: [.structure(Transcript.StructuredSegment(
+                        id: UUID().uuidString,
+                        source: "claude",
+                        content: generatedContent
+                    ))]
+                )
+            )
+        }
+
+        // Fallback to text segment if parsing fails
+        return createResponseEntry(content: textContent)
+    }
+
+    // MARK: - Schema-Aware JSON Parsing
+
+    /// Parse JSON using schema information to construct correct GeneratedContent
+    /// Handles Claude's behavior of returning {} for empty arrays
+    /// - Parameters:
+    ///   - json: The JSON string to parse
+    ///   - schema: The GenerationSchema describing the expected structure
+    /// - Returns: GeneratedContent with correct Kind values, or nil if parsing fails
+    private func parseJSONWithSchema(_ json: String, schema: GenerationSchema) -> GeneratedContent? {
+        guard let jsonData = json.data(using: .utf8),
+              let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) else {
+            return nil
+        }
+
+        // Convert GenerationSchema to JSON Schema dictionary
+        guard let schemaData = try? JSONEncoder().encode(schema),
+              let schemaDict = try? JSONSerialization.jsonObject(with: schemaData) as? [String: Any] else {
+            return nil
+        }
+
+        return convertToGeneratedContent(jsonObject, schemaDict: schemaDict)
+    }
+
+    /// Convert a JSON value to GeneratedContent using JSON Schema dictionary
+    /// - Parameters:
+    ///   - value: The JSON value (from JSONSerialization)
+    ///   - schemaDict: The JSON Schema dictionary describing the expected structure
+    /// - Returns: GeneratedContent with the appropriate Kind
+    private func convertToGeneratedContent(_ value: Any, schemaDict: [String: Any]) -> GeneratedContent {
+        // Check if schema expects an array (handles both "type": "array" and "type": ["array", "null"])
+        if isArraySchema(schemaDict) {
+            // Claude returns {} for empty arrays - convert to []
+            if let dict = value as? [String: Any], dict.isEmpty {
+                return GeneratedContent(kind: .array([]))
+            }
+            if let array = value as? [Any] {
+                let itemsSchema = schemaDict["items"] as? [String: Any] ?? [:]
+                let elements = array.map { convertToGeneratedContent($0, schemaDict: itemsSchema) }
+                return GeneratedContent(kind: .array(elements))
+            }
+            // Null value for optional array
+            if value is NSNull {
+                return GeneratedContent(kind: .null)
+            }
+            // Unexpected type for array - return empty array
+            return GeneratedContent(kind: .array([]))
+        }
+
+        // Handle object schema
+        if isObjectSchema(schemaDict) {
+            guard let dict = value as? [String: Any] else {
+                if value is NSNull {
+                    return GeneratedContent(kind: .null)
+                }
+                return GeneratedContent(kind: .structure(properties: [:], orderedKeys: []))
+            }
+
+            let propertiesSchema = schemaDict["properties"] as? [String: [String: Any]] ?? [:]
+            let requiredFields = schemaDict["required"] as? [String] ?? []
+
+            var converted: [String: GeneratedContent] = [:]
+            var orderedKeys: [String] = []
+
+            for (propName, propSchema) in propertiesSchema.sorted(by: { $0.key < $1.key }) {
+                orderedKeys.append(propName)
+                if let propValue = dict[propName] {
+                    converted[propName] = convertToGeneratedContent(propValue, schemaDict: propSchema)
+                } else if !requiredFields.contains(propName) {
+                    converted[propName] = GeneratedContent(kind: .null)
+                }
+            }
+            return GeneratedContent(kind: .structure(properties: converted, orderedKeys: orderedKeys))
+        }
+
+        // Handle anyOf schema (union types including optional arrays)
+        if let anyOfSchemas = schemaDict["anyOf"] as? [[String: Any]] {
+            // Check if this is an optional array (anyOf with array and null)
+            for subSchema in anyOfSchemas {
+                if isArraySchema(subSchema) {
+                    // Claude returns {} for empty arrays - convert to []
+                    if let dict = value as? [String: Any], dict.isEmpty {
+                        return GeneratedContent(kind: .array([]))
+                    }
+                    if let array = value as? [Any] {
+                        let itemsSchema = subSchema["items"] as? [String: Any] ?? [:]
+                        let elements = array.map { convertToGeneratedContent($0, schemaDict: itemsSchema) }
+                        return GeneratedContent(kind: .array(elements))
+                    }
+                }
+            }
+            // Try other schemas in anyOf
+            for subSchema in anyOfSchemas {
+                let result = convertToGeneratedContent(value, schemaDict: subSchema)
+                if case .null = result.kind {
+                    continue
+                }
+                return result
+            }
+            return convertPrimitiveToGeneratedContent(value)
+        }
+
+        // Handle primitive types
+        return convertPrimitiveToGeneratedContent(value)
+    }
+
+    /// Check if schema expects an array type
+    private func isArraySchema(_ schema: [String: Any]) -> Bool {
+        if let type = schema["type"] as? String {
+            return type == "array"
+        }
+        if let types = schema["type"] as? [String] {
+            return types.contains("array")
+        }
+        return false
+    }
+
+    /// Check if schema expects an object type
+    private func isObjectSchema(_ schema: [String: Any]) -> Bool {
+        if let type = schema["type"] as? String {
+            return type == "object"
+        }
+        if let types = schema["type"] as? [String] {
+            return types.contains("object")
+        }
+        return false
+    }
+
+    /// Convert a primitive JSON value to GeneratedContent
+    /// - Parameter value: The primitive value
+    /// - Returns: GeneratedContent with the appropriate Kind
+    private func convertPrimitiveToGeneratedContent(_ value: Any) -> GeneratedContent {
+        switch value {
+        case let str as String:
+            return GeneratedContent(kind: .string(str))
+        case let num as NSNumber:
+            // Distinguish between Bool and Number
+            if CFGetTypeID(num) == CFBooleanGetTypeID() {
+                return GeneratedContent(kind: .bool(num.boolValue))
+            }
+            return GeneratedContent(kind: .number(num.doubleValue))
+        case let bool as Bool:
+            return GeneratedContent(kind: .bool(bool))
+        case is NSNull:
+            return GeneratedContent(kind: .null)
+        case let dict as [String: Any]:
+            // Nested object without schema - try to preserve structure
+            var converted: [String: GeneratedContent] = [:]
+            let orderedKeys = Array(dict.keys).sorted()
+            for key in orderedKeys {
+                if let propValue = dict[key] {
+                    converted[key] = convertPrimitiveToGeneratedContent(propValue)
+                }
+            }
+            return GeneratedContent(kind: .structure(properties: converted, orderedKeys: orderedKeys))
+        case let array as [Any]:
+            let elements = array.map { convertPrimitiveToGeneratedContent($0) }
+            return GeneratedContent(kind: .array(elements))
+        default:
+            return GeneratedContent(String(describing: value))
+        }
+    }
+
     /// Convert GenerationSchema to Claude's native OutputFormat for structured outputs
     private func convertToOutputFormat(_ schema: GenerationSchema) -> OutputFormat? {
         // GenerationSchema is Encodable, so we can serialize it to JSON
@@ -403,6 +623,13 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                     description: description,
                     properties: nested.isEmpty ? nil : nested,
                     required: nestedRequired.isEmpty ? nil : nestedRequired,
+                    additionalProperties: false
+                )
+            } else {
+                // Object without properties - still needs additionalProperties: false
+                return JSONSchemaProperty(
+                    type: "object",
+                    description: description,
                     additionalProperties: false
                 )
             }

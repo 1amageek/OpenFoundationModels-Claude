@@ -19,7 +19,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/OpenFoundationModels.git", from: "1.0.3"),
+        .package(url: "https://github.com/1amageek/OpenFoundationModels.git", from: "1.1.1"),
         .package(url: "https://github.com/apple/swift-configuration.git", from: "1.0.0")
     ],
     targets: [

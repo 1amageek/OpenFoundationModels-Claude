@@ -158,6 +158,104 @@ struct IntegrationTests {
         }
     }
 
+    // MARK: - Tool Call Tests
+
+    @Test("Tool call is returned when tools are defined", .timeLimit(.minutes(1)))
+    func toolCallReturned() async throws {
+        guard let config = ClaudeConfiguration.fromEnvironment() else {
+            Issue.record("ANTHROPIC_API_KEY not set")
+            return
+        }
+
+        let model = ClaudeLanguageModel.sonnet4(configuration: config)
+
+        let toolSchema = GenerationSchema(
+            type: String.self,
+            description: "Weather parameters",
+            properties: [
+                GenerationSchema.Property(name: "location", description: "City name", type: String.self, guides: [])
+            ]
+        )
+
+        let transcript = Transcript(entries: [
+            .instructions(Transcript.Instructions(
+                segments: [.text(Transcript.TextSegment(content: "You have a get_weather tool. Always use it when asked about weather."))],
+                toolDefinitions: [
+                    Transcript.ToolDefinition(
+                        name: "get_weather",
+                        description: "Get the current weather for a location",
+                        parameters: toolSchema
+                    )
+                ]
+            )),
+            .prompt(Transcript.Prompt(
+                segments: [.text(Transcript.TextSegment(content: "What is the weather in Tokyo?"))],
+                options: GenerationOptions()
+            ))
+        ])
+
+        let entry = try await model.generate(transcript: transcript, options: nil)
+
+        if case .toolCalls(let toolCalls) = entry {
+            #expect(!toolCalls.isEmpty, "Should contain at least one tool call")
+            let firstCall = toolCalls.first!
+            #expect(firstCall.toolName == "get_weather")
+            print("Tool call: \(firstCall.toolName), args: \(firstCall.arguments.jsonString)")
+        } else {
+            Issue.record("Expected toolCalls entry, got: \(entry)")
+        }
+    }
+
+    @Test("Structured output with additionalProperties works", .timeLimit(.minutes(1)))
+    func structuredOutputWorks() async throws {
+        guard let config = ClaudeConfiguration.fromEnvironment() else {
+            Issue.record("ANTHROPIC_API_KEY not set")
+            return
+        }
+
+        // Structured output requires sonnet4_5 or later
+        let model = ClaudeLanguageModel.sonnet4_5(configuration: config)
+
+        let responseSchema = GenerationSchema(
+            type: String.self,
+            description: "A greeting response",
+            properties: [
+                GenerationSchema.Property(name: "greeting", description: "A greeting message", type: String.self, guides: []),
+                GenerationSchema.Property(name: "language", description: "The language of the greeting", type: String.self, guides: [])
+            ]
+        )
+
+        let transcript = Transcript(entries: [
+            .prompt(Transcript.Prompt(
+                segments: [.text(Transcript.TextSegment(content: "Say hello in Japanese. Respond in the required JSON format."))],
+                options: GenerationOptions(),
+                responseFormat: Transcript.ResponseFormat(schema: responseSchema)
+            ))
+        ])
+
+        let entry = try await model.generate(transcript: transcript, options: nil)
+
+        if case .response(let response) = entry {
+            // Structured output may return as text or structured segment
+            let text = extractText(from: response.segments)
+            let structuredContent = extractStructuredContent(from: response.segments)
+
+            let hasContent = !text.isEmpty || structuredContent != nil
+            #expect(hasContent, "Response should contain structured output")
+
+            if let content = structuredContent {
+                let jsonString = content.jsonString
+                #expect(jsonString.contains("greeting"), "Structured content should contain 'greeting' field")
+                print("Structured response (structured): \(jsonString)")
+            } else {
+                #expect(text.contains("greeting"), "Text response should contain 'greeting' field")
+                print("Structured response (text): \(text)")
+            }
+        } else {
+            Issue.record("Expected response entry, got: \(entry)")
+        }
+    }
+
     // MARK: - Helper Methods
 
     private func extractText(from segments: [Transcript.Segment]) -> String {
@@ -167,5 +265,14 @@ struct IntegrationTests {
             }
             return nil
         }.joined()
+    }
+
+    private func extractStructuredContent(from segments: [Transcript.Segment]) -> GeneratedContent? {
+        for segment in segments {
+            if case .structure(let structuredSegment) = segment {
+                return structuredSegment.content
+            }
+        }
+        return nil
     }
 }

@@ -151,9 +151,11 @@ internal struct TranscriptConverter {
         let encoder = JSONEncoder()
         let jsonData = try encoder.encode(definition.parameters)
 
-        guard let inputSchema = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+        guard var inputSchema = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
             throw TranscriptConverterError.invalidSchemaFormat
         }
+
+        setAdditionalPropertiesFalse(&inputSchema)
 
         return Tool(
             name: definition.name,
@@ -216,5 +218,38 @@ internal struct TranscriptConverter {
             }
             return dict
         }
+    }
+}
+
+// MARK: - Claude API Schema Fixup
+
+/// Recursively sets `"additionalProperties": false` on all object schemas
+/// with `"properties"`, as required by the Claude API for structured outputs and tool input schemas.
+internal func setAdditionalPropertiesFalse(_ schema: inout [String: Any]) {
+    if let type = schema["type"] as? String, type == "object",
+       schema["properties"] != nil {
+        schema["additionalProperties"] = false
+    }
+
+    if var properties = schema["properties"] as? [String: Any] {
+        for (key, value) in properties {
+            if var propSchema = value as? [String: Any] {
+                setAdditionalPropertiesFalse(&propSchema)
+                properties[key] = propSchema
+            }
+        }
+        schema["properties"] = properties
+    }
+
+    if var items = schema["items"] as? [String: Any] {
+        setAdditionalPropertiesFalse(&items)
+        schema["items"] = items
+    }
+
+    if var anyOf = schema["anyOf"] as? [[String: Any]] {
+        for i in anyOf.indices {
+            setAdditionalPropertiesFalse(&anyOf[i])
+        }
+        schema["anyOf"] = anyOf
     }
 }

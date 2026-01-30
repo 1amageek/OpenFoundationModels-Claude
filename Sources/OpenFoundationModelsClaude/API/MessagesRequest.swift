@@ -70,9 +70,10 @@ struct OutputFormat: Codable, Sendable {
     init(schema: GenerationSchema) throws {
         self.type = "json_schema"
         let data = try JSONEncoder().encode(schema)
-        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard var dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw OutputFormatError.invalidSchema
         }
+        setAdditionalPropertiesFalse(&dict)
         self.schema = JSONValue(dict)
     }
 }

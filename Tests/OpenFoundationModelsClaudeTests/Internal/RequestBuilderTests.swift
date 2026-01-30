@@ -289,6 +289,89 @@ struct RequestBuilderTests {
         #expect(result.request.toolChoice != nil)
     }
 
+    @Test("Build encodes tool input_schema with additionalProperties false")
+    func buildToolSchemaHasAdditionalPropertiesFalse() throws {
+        let schema = GenerationSchema(
+            type: String.self,
+            description: "Tool parameters",
+            properties: [
+                GenerationSchema.Property(name: "query", description: "Search query", type: String.self, guides: []),
+                GenerationSchema.Property(name: "limit", description: "Max results", type: Int.self, guides: [])
+            ]
+        )
+        let transcript = Transcript(entries: [
+            .instructions(Transcript.Instructions(
+                segments: [.text(Transcript.TextSegment(content: "Use tools"))],
+                toolDefinitions: [
+                    Transcript.ToolDefinition(
+                        name: "search",
+                        description: "Search the web",
+                        parameters: schema
+                    )
+                ]
+            )),
+            .prompt(Transcript.Prompt(segments: [.text(Transcript.TextSegment(content: "Search for Swift"))]))
+        ])
+
+        let result = try RequestBuilder.build(
+            transcript: transcript,
+            options: nil,
+            modelName: "claude-sonnet-4-20250514",
+            defaultMaxTokens: 4096,
+            thinkingBudgetTokens: nil,
+            pendingThinkingBlocks: [],
+            stream: false
+        )
+
+        let tools = result.request.tools
+        #expect(tools != nil)
+        #expect(tools?.count == 1)
+
+        let toolData = try JSONHelpers.encode(tools![0])
+        let toolDict = try JSONHelpers.toDictionary(toolData)
+        let inputSchema = toolDict["input_schema"] as? [String: Any]
+        #expect(inputSchema?["type"] as? String == "object")
+        #expect(inputSchema?["additionalProperties"] as? Bool == false)
+    }
+
+    @Test("Build encodes output_format schema with additionalProperties false")
+    func buildOutputFormatSchemaHasAdditionalPropertiesFalse() throws {
+        let responseSchema = GenerationSchema(
+            type: String.self,
+            description: "Response",
+            properties: [
+                GenerationSchema.Property(name: "answer", description: "The answer", type: String.self, guides: []),
+                GenerationSchema.Property(name: "confidence", description: "Confidence", type: Int.self, guides: [])
+            ]
+        )
+        let transcript = Transcript(entries: [
+            .prompt(Transcript.Prompt(
+                segments: [.text(Transcript.TextSegment(content: "Question"))],
+                options: GenerationOptions(),
+                responseFormat: Transcript.ResponseFormat(schema: responseSchema)
+            ))
+        ])
+
+        let result = try RequestBuilder.build(
+            transcript: transcript,
+            options: nil,
+            modelName: "claude-sonnet-4-20250514",
+            defaultMaxTokens: 4096,
+            thinkingBudgetTokens: nil,
+            pendingThinkingBlocks: [],
+            stream: false
+        )
+
+        #expect(result.request.outputFormat != nil)
+        #expect(result.betaHeaders != nil)
+
+        let formatData = try JSONHelpers.encode(result.request.outputFormat!)
+        let formatDict = try JSONHelpers.toDictionary(formatData)
+        let schemaDict = formatDict["schema"] as? [String: Any]
+        #expect(schemaDict?["type"] as? String == "object")
+        #expect(schemaDict?["additionalProperties"] as? Bool == false)
+    }
+
     @Test("Build sets nil tool choice when no tools")
     func buildNilToolChoiceWithoutTools() throws {
         let transcript = Transcript(entries: [

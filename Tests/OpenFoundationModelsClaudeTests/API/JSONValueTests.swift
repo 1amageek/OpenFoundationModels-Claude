@@ -106,141 +106,143 @@ struct JSONValueTests {
         #expect(json?["key"] as? String == "value")
     }
 
-    // MARK: - AnyCodable Tests
+    // MARK: - JSONPrimitive Tests
 
-    @Test("AnyCodable decodes Bool")
-    func anyCodableDecodesBool() throws {
+    @Test("JSONPrimitive decodes Bool")
+    func jsonPrimitiveDecodesBool() throws {
         let json = "true".data(using: .utf8)!
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: json)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: json)
 
-        #expect(decoded.value as? Bool == true)
+        #expect(decoded == .bool(true))
     }
 
-    @Test("AnyCodable decodes Int")
-    func anyCodableDecodesInt() throws {
+    @Test("JSONPrimitive decodes Int")
+    func jsonPrimitiveDecodesInt() throws {
         let json = "42".data(using: .utf8)!
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: json)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: json)
 
-        #expect(decoded.value as? Int == 42)
+        #expect(decoded == .int(42))
     }
 
-    @Test("AnyCodable decodes Double")
-    func anyCodableDecodesDouble() throws {
+    @Test("JSONPrimitive decodes Double")
+    func jsonPrimitiveDecodesDouble() throws {
         let json = "3.14159".data(using: .utf8)!
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: json)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: json)
 
-        #expect(decoded.value as? Double == 3.14159)
+        #expect(decoded == .double(3.14159))
     }
 
-    @Test("AnyCodable decodes String")
-    func anyCodableDecodesString() throws {
+    @Test("JSONPrimitive decodes String")
+    func jsonPrimitiveDecodesString() throws {
         let json = "\"hello world\"".data(using: .utf8)!
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: json)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: json)
 
-        #expect(decoded.value as? String == "hello world")
+        #expect(decoded == .string("hello world"))
     }
 
-    @Test("AnyCodable decodes Array")
-    func anyCodableDecodesArray() throws {
+    @Test("JSONPrimitive decodes Array")
+    func jsonPrimitiveDecodesArray() throws {
         let json = "[1, 2, 3]".data(using: .utf8)!
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: json)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: json)
 
-        let array = decoded.value as? [Any]
-        #expect(array?.count == 3)
+        #expect(decoded == .array([.int(1), .int(2), .int(3)]))
     }
 
-    @Test("AnyCodable decodes Dictionary")
-    func anyCodableDecodesDictionary() throws {
+    @Test("JSONPrimitive decodes Dictionary")
+    func jsonPrimitiveDecodesDictionary() throws {
         let json = "{\"key\": \"value\"}".data(using: .utf8)!
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: json)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: json)
 
-        let dict = decoded.value as? [String: Any]
-        #expect(dict?["key"] as? String == "value")
+        #expect(decoded == .object(["key": .string("value")]))
     }
 
-    @Test("AnyCodable decodes null as NSNull")
-    func anyCodableDecodesNull() throws {
+    @Test("JSONPrimitive decodes null")
+    func jsonPrimitiveDecodesNull() throws {
         let json = "null".data(using: .utf8)!
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: json)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: json)
 
-        #expect(decoded.value is NSNull)
+        #expect(decoded == .null)
     }
 
-    @Test("AnyCodable encodes Bool correctly")
-    func anyCodableEncodesBool() throws {
-        let anyCodable = AnyCodable(true)
-        let data = try JSONHelpers.encode(anyCodable)
+    @Test("JSONPrimitive encodes Bool correctly")
+    func jsonPrimitiveEncodesBool() throws {
+        let data = try JSONHelpers.encode(JSONPrimitive.bool(true))
         let string = String(data: data, encoding: .utf8)
 
         #expect(string == "true")
     }
 
-    @Test("AnyCodable encodes Int correctly")
-    func anyCodableEncodesInt() throws {
-        let anyCodable = AnyCodable(42)
-        let data = try JSONHelpers.encode(anyCodable)
+    @Test("JSONPrimitive encodes Int correctly")
+    func jsonPrimitiveEncodesInt() throws {
+        let data = try JSONHelpers.encode(JSONPrimitive.int(42))
         let string = String(data: data, encoding: .utf8)
 
         #expect(string == "42")
     }
 
-    @Test("AnyCodable encodes String correctly")
-    func anyCodableEncodesString() throws {
-        let anyCodable = AnyCodable("test")
-        let data = try JSONHelpers.encode(anyCodable)
+    @Test("JSONPrimitive encodes String correctly")
+    func jsonPrimitiveEncodesString() throws {
+        let data = try JSONHelpers.encode(JSONPrimitive.string("test"))
         let string = String(data: data, encoding: .utf8)
 
         #expect(string == "\"test\"")
     }
 
-    @Test("AnyCodable encodes Array correctly")
-    func anyCodableEncodesArray() throws {
-        let anyCodable = AnyCodable([1, 2, 3])
-        let data = try JSONHelpers.encode(anyCodable)
+    @Test("JSONPrimitive encodes Array correctly")
+    func jsonPrimitiveEncodesArray() throws {
+        let data = try JSONHelpers.encode(JSONPrimitive.array([.int(1), .int(2), .int(3)]))
         let decoded = try JSONSerialization.jsonObject(with: data) as? [Int]
 
         #expect(decoded == [1, 2, 3])
     }
 
-    @Test("AnyCodable encodes Dictionary correctly")
-    func anyCodableEncodesDictionary() throws {
-        let anyCodable = AnyCodable(["key": "value"])
-        let data = try JSONHelpers.encode(anyCodable)
+    @Test("JSONPrimitive encodes Dictionary correctly")
+    func jsonPrimitiveEncodesDictionary() throws {
+        let data = try JSONHelpers.encode(JSONPrimitive.object(["key": .string("value")]))
         let decoded = try JSONSerialization.jsonObject(with: data) as? [String: String]
 
         #expect(decoded?["key"] == "value")
     }
 
-    @Test("AnyCodable encodes NSNull correctly")
-    func anyCodableEncodesNSNull() throws {
-        let anyCodable = AnyCodable(NSNull())
-        let data = try JSONHelpers.encode(anyCodable)
+    @Test("JSONPrimitive encodes null correctly")
+    func jsonPrimitiveEncodesNull() throws {
+        let data = try JSONHelpers.encode(JSONPrimitive.null)
         let string = String(data: data, encoding: .utf8)
 
         #expect(string == "null")
     }
 
-    @Test("AnyCodable handles mixed type arrays")
-    func anyCodableHandlesMixedArrays() throws {
+    @Test("JSONPrimitive handles mixed type arrays")
+    func jsonPrimitiveHandlesMixedArrays() throws {
         let json = "[1, \"two\", true, null]".data(using: .utf8)!
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: json)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: json)
 
-        let array = decoded.value as? [Any]
-        #expect(array?.count == 4)
-        #expect(array?[0] as? Int == 1)
-        #expect(array?[1] as? String == "two")
-        #expect(array?[2] as? Bool == true)
-        #expect(array?[3] is NSNull)
+        #expect(decoded == .array([.int(1), .string("two"), .bool(true), .null]))
     }
 
-    @Test("AnyCodable roundtrip preserves values")
-    func anyCodableRoundtrip() throws {
-        let original = AnyCodable(["name": "test", "count": 42])
+    @Test("JSONPrimitive roundtrip preserves values")
+    func jsonPrimitiveRoundtrip() throws {
+        let original = JSONPrimitive.object(["name": .string("test"), "count": .int(42)])
         let data = try JSONHelpers.encode(original)
-        let decoded = try JSONHelpers.decode(AnyCodable.self, from: data)
+        let decoded = try JSONHelpers.decode(JSONPrimitive.self, from: data)
 
-        let dict = decoded.value as? [String: Any]
-        #expect(dict?["name"] as? String == "test")
-        #expect(dict?["count"] as? Int == 42)
+        #expect(decoded == original)
+    }
+
+    @Test("JSONPrimitive.from converts Any values correctly")
+    func jsonPrimitiveFromAny() {
+        #expect(JSONPrimitive.from(NSNull()) == .null)
+        #expect(JSONPrimitive.from("hello") == .string("hello"))
+        #expect(JSONPrimitive.from(42) == .int(42))
+        #expect(JSONPrimitive.from(true) == .bool(true))
+    }
+
+    @Test("JSONPrimitive anyValue converts back correctly")
+    func jsonPrimitiveAnyValue() {
+        #expect(JSONPrimitive.null.anyValue is NSNull)
+        #expect(JSONPrimitive.bool(true).anyValue as? Bool == true)
+        #expect(JSONPrimitive.int(42).anyValue as? Int == 42)
+        #expect(JSONPrimitive.double(3.14).anyValue as? Double == 3.14)
+        #expect(JSONPrimitive.string("test").anyValue as? String == "test")
     }
 }

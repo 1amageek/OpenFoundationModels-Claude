@@ -1,104 +1,126 @@
 import Foundation
 
-/// Type-erased JSON value for handling dynamic JSON structures
-struct JSONValue: Codable, Sendable {
-    private let data: Data
+/// A type-safe, Sendable JSON primitive that replaces untyped `Any` wrappers.
+enum JSONPrimitive: Codable, Sendable, Equatable {
+    case null
+    case bool(Bool)
+    case int(Int)
+    case double(Double)
+    case string(String)
+    case array([JSONPrimitive])
+    case object([String: JSONPrimitive])
 
-    init(_ dictionary: [String: Any]) {
-        if let jsonData = try? JSONSerialization.data(withJSONObject: dictionary) {
-            self.data = jsonData
-        } else {
-            self.data = Data()
-        }
-    }
-
+    // Decoder union pattern: try? is the only way to probe decode types.
+    // This is an accepted exception to the no-try? rule.
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
 
-        if let dict = try? container.decode([String: AnyCodable].self) {
-            let convertedDict = dict.mapValues { $0.value }
-            if let jsonData = try? JSONSerialization.data(withJSONObject: convertedDict) {
-                self.data = jsonData
-            } else {
-                self.data = Data()
-            }
+        if container.decodeNil() {
+            self = .null
+        } else if let bool = try? container.decode(Bool.self) {
+            self = .bool(bool)
+        } else if let int = try? container.decode(Int.self) {
+            self = .int(int)
+        } else if let double = try? container.decode(Double.self) {
+            self = .double(double)
+        } else if let string = try? container.decode(String.self) {
+            self = .string(string)
+        } else if let array = try? container.decode([JSONPrimitive].self) {
+            self = .array(array)
+        } else if let dict = try? container.decode([String: JSONPrimitive].self) {
+            self = .object(dict)
         } else {
-            self.data = Data()
+            self = .null
         }
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-
-        if let json = try? JSONSerialization.jsonObject(with: data),
-           let dict = json as? [String: Any] {
-            let codableDict = dict.mapValues { AnyCodable($0) }
-            try container.encode(codableDict)
-        } else {
-            try container.encode([String: AnyCodable]())
+        switch self {
+        case .null:
+            try container.encodeNil()
+        case .bool(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        case .string(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
         }
     }
 
-    var dictionary: [String: Any] {
-        if data.isEmpty { return [:] }
+    /// Convert to untyped `Any` for interop with JSONSerialization-based code.
+    var anyValue: Any {
+        switch self {
+        case .null: return NSNull()
+        case .bool(let v): return v
+        case .int(let v): return v
+        case .double(let v): return v
+        case .string(let v): return v
+        case .array(let v): return v.map { $0.anyValue }
+        case .object(let v): return v.mapValues { $0.anyValue }
+        }
+    }
 
-        do {
-            if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                return json
-            }
-        } catch {}
-        return [:]
+    /// Create from an untyped `Any` value (best-effort conversion).
+    ///
+    /// Pattern matching order matters due to Foundation bridging:
+    /// - `Bool` must precede numeric types (Bool bridges to NSNumber)
+    /// - Native Swift `Int`/`Double` are checked before `NSNumber`
+    ///   to preserve the caller's original type intent
+    /// - `NSNumber` fallback handles values from JSONSerialization
+    static func from(_ value: Any) -> JSONPrimitive {
+        switch value {
+        case is NSNull:
+            return .null
+        case let bool as Bool:
+            return .bool(bool)
+        case let int as Int:
+            return .int(int)
+        case let double as Double:
+            return .double(double)
+        case let string as String:
+            return .string(string)
+        case let array as [Any]:
+            return .array(array.map { from($0) })
+        case let dict as [String: Any]:
+            return .object(dict.mapValues { from($0) })
+        default:
+            return .string(String(describing: value))
+        }
     }
 }
 
-/// Helper type for encoding/decoding Any values
-struct AnyCodable: Codable, @unchecked Sendable {
-    let value: Any
+/// Type-erased JSON value for handling dynamic JSON structures.
+/// Stores data as `[String: JSONPrimitive]` for full Sendable safety.
+struct JSONValue: Codable, Sendable {
+    private let storage: [String: JSONPrimitive]
 
-    init(_ value: Any) {
-        self.value = value
+    init(_ dictionary: [String: Any]) {
+        self.storage = dictionary.mapValues { JSONPrimitive.from($0) }
+    }
+
+    private init(primitives: [String: JSONPrimitive]) {
+        self.storage = primitives
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-
-        if let bool = try? container.decode(Bool.self) {
-            value = bool
-        } else if let int = try? container.decode(Int.self) {
-            value = int
-        } else if let double = try? container.decode(Double.self) {
-            value = double
-        } else if let string = try? container.decode(String.self) {
-            value = string
-        } else if let array = try? container.decode([AnyCodable].self) {
-            value = array.map { $0.value }
-        } else if let dict = try? container.decode([String: AnyCodable].self) {
-            value = dict.mapValues { $0.value }
-        } else {
-            value = NSNull()
-        }
+        self.storage = try container.decode([String: JSONPrimitive].self)
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
+        try container.encode(storage)
+    }
 
-        switch value {
-        case let bool as Bool:
-            try container.encode(bool)
-        case let int as Int:
-            try container.encode(int)
-        case let double as Double:
-            try container.encode(double)
-        case let string as String:
-            try container.encode(string)
-        case let array as [Any]:
-            try container.encode(array.map { AnyCodable($0) })
-        case let dict as [String: Any]:
-            try container.encode(dict.mapValues { AnyCodable($0) })
-        case is NSNull:
-            try container.encodeNil()
-        default:
-            try container.encode(String(describing: value))
-        }
+    /// Access as untyped dictionary for backward compatibility.
+    var dictionary: [String: Any] {
+        storage.mapValues { $0.anyValue }
     }
 }

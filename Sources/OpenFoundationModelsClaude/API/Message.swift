@@ -19,6 +19,8 @@ struct Message: Codable, Sendable {
         case role, content
     }
 
+    // Decoder union pattern: try? is the only way to probe decode types.
+    // This is an accepted exception to the no-try? rule.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.role = try container.decode(Role.self, forKey: .role)

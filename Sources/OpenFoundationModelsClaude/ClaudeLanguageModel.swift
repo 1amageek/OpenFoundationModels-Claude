@@ -1,26 +1,5 @@
 import Foundation
-import Synchronization
 import OpenFoundationModels
-
-// MARK: - Claude Options
-internal struct ClaudeOptions: Sendable {
-    let temperature: Double?
-    let topK: Int?
-    let topP: Double?
-}
-
-// MARK: - GenerationOptions Extension
-internal extension GenerationOptions {
-    func toClaudeOptions() -> ClaudeOptions {
-        // Note: SamplingMode internals cannot be easily extracted
-        // Users should use temperature directly
-        return ClaudeOptions(
-            temperature: temperature,
-            topK: nil,
-            topP: nil
-        )
-    }
-}
 
 /// Claude Language Model Provider for OpenFoundationModels
 public final class ClaudeLanguageModel: LanguageModel, Sendable {
@@ -43,9 +22,8 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
     /// - Only `tool_choice: auto` or `none` is allowed (not `any` or specific tool)
     public let thinkingBudgetTokens: Int?
 
-    /// Stores thinking blocks from the last assistant response that contained tool_use.
-    /// These must be included in the next request's assistant message per Claude API requirements.
-    private let _pendingThinkingBlocks = Mutex<[ResponseContentBlock]>([])
+    /// Manages pending thinking blocks for tool-use conversations with extended thinking.
+    private let thinkingBlockManager = ThinkingBlockManager()
 
     // MARK: - LanguageModel Protocol Compliance
     public var isAvailable: Bool { true }
@@ -74,51 +52,21 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
     // MARK: - LanguageModel Protocol Implementation
 
     public func generate(transcript: Transcript, options: GenerationOptions?) async throws -> Transcript.Entry {
-        // Convert Transcript to Claude format
-        var (messages, systemPrompt) = TranscriptConverter.buildMessages(from: transcript)
-        let tools = try TranscriptConverter.extractTools(from: transcript)
-
-        // Inject pending thinking blocks into the last assistant message
-        // (required by Claude API for tool use conversations with extended thinking)
-        let storedThinkingBlocks = takePendingThinkingBlocks()
-        if !storedThinkingBlocks.isEmpty {
-            messages = injectThinkingBlocks(storedThinkingBlocks, into: messages)
-        }
-
-        // Use the options from the transcript if not provided
-        let finalOptions = options ?? TranscriptConverter.extractOptions(from: transcript)
-        let claudeOptions = finalOptions?.toClaudeOptions() ?? ClaudeOptions(temperature: nil, topK: nil, topP: nil)
-
-        // Resolve thinking, maxTokens, and temperature based on thinking mode
-        let (thinking, maxTokens, temperature, topK) = resolveThinkingParameters(
-            claudeOptions: claudeOptions,
-            requestedMaxTokens: finalOptions?.maximumResponseTokens
+        let buildResult = try RequestBuilder.build(
+            transcript: transcript,
+            options: options,
+            modelName: modelName,
+            defaultMaxTokens: defaultMaxTokens,
+            thinkingBudgetTokens: thinkingBudgetTokens,
+            pendingThinkingBlocks: thinkingBlockManager.take(),
+            stream: false
         )
 
-        // Check for response format (structured output)
-        let responseFormat = TranscriptConverter.extractResponseFormat(from: transcript)
-
-        // Convert GenerationSchema to Claude OutputFormat if present
-        let outputFormat = responseFormat.flatMap { convertToOutputFormat($0) }
-        let betaHeaders: [String]? = outputFormat != nil ? ["structured-outputs-2025-11-13"] : nil
-
-        // Build request
-        let request = MessagesRequest(
-            model: modelName,
-            messages: messages,
-            maxTokens: maxTokens,
-            system: systemPrompt,
-            tools: tools,
-            toolChoice: tools != nil ? .auto() : nil,
-            stream: false,
-            temperature: temperature,
-            topK: topK,
-            topP: claudeOptions.topP,
-            thinking: thinking,
-            outputFormat: outputFormat
+        let response: MessagesResponse = try await httpClient.send(
+            buildResult.request,
+            to: "/v1/messages",
+            betaHeaders: buildResult.betaHeaders
         )
-
-        let response: MessagesResponse = try await httpClient.send(request, to: "/v1/messages", betaHeaders: betaHeaders)
 
         // Check for tool calls
         let toolUseBlocks = response.content.compactMap { block -> ToolUseBlock? in
@@ -130,66 +78,37 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
 
         if !toolUseBlocks.isEmpty {
             // Store thinking blocks for the next request in the tool use loop
-            storePendingThinkingBlocks(from: response.content)
-            return createToolCallsEntry(from: toolUseBlocks)
+            thinkingBlockManager.store(from: response.content)
+            return ResponseConverter.createToolCallsEntry(from: toolUseBlocks)
         }
 
         // Convert response to Transcript.Entry
         // Use schema-aware parsing if response format was specified
-        if let schema = responseFormat {
-            return createResponseEntry(from: response, schema: schema)
+        if let schema = buildResult.responseSchema {
+            return ResponseConverter.createResponseEntry(from: response, schema: schema)
         }
-        return createResponseEntry(from: response)
+        return ResponseConverter.createResponseEntry(from: response)
     }
 
     public func stream(transcript: Transcript, options: GenerationOptions?) -> AsyncThrowingStream<Transcript.Entry, Error> {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    // Convert Transcript to Claude format
-                    var (messages, systemPrompt) = TranscriptConverter.buildMessages(from: transcript)
-                    let tools = try TranscriptConverter.extractTools(from: transcript)
-
-                    // Inject pending thinking blocks into the last assistant message
-                    let storedThinkingBlocks = self.takePendingThinkingBlocks()
-                    if !storedThinkingBlocks.isEmpty {
-                        messages = self.injectThinkingBlocks(storedThinkingBlocks, into: messages)
-                    }
-
-                    // Use the options from the transcript if not provided
-                    let finalOptions = options ?? TranscriptConverter.extractOptions(from: transcript)
-                    let claudeOptions = finalOptions?.toClaudeOptions() ?? ClaudeOptions(temperature: nil, topK: nil, topP: nil)
-
-                    // Resolve thinking parameters
-                    let (thinking, maxTokens, temperature, topK) = self.resolveThinkingParameters(
-                        claudeOptions: claudeOptions,
-                        requestedMaxTokens: finalOptions?.maximumResponseTokens
+                    let buildResult = try RequestBuilder.build(
+                        transcript: transcript,
+                        options: options,
+                        modelName: self.modelName,
+                        defaultMaxTokens: self.defaultMaxTokens,
+                        thinkingBudgetTokens: self.thinkingBudgetTokens,
+                        pendingThinkingBlocks: self.thinkingBlockManager.take(),
+                        stream: true
                     )
 
-                    // Check for response format
-                    let responseFormat = TranscriptConverter.extractResponseFormat(from: transcript)
-
-                    // Convert GenerationSchema to Claude OutputFormat if present
-                    let outputFormat = responseFormat.flatMap { self.convertToOutputFormat($0) }
-                    let betaHeaders: [String]? = outputFormat != nil ? ["structured-outputs-2025-11-13"] : nil
-
-                    // Build request
-                    let request = MessagesRequest(
-                        model: self.modelName,
-                        messages: messages,
-                        maxTokens: maxTokens,
-                        system: systemPrompt,
-                        tools: tools,
-                        toolChoice: tools != nil ? .auto() : nil,
-                        stream: true,
-                        temperature: temperature,
-                        topK: topK,
-                        topP: claudeOptions.topP,
-                        thinking: thinking,
-                        outputFormat: outputFormat
+                    let streamResponse = await self.httpClient.stream(
+                        buildResult.request,
+                        to: "/v1/messages",
+                        betaHeaders: buildResult.betaHeaders
                     )
-
-                    let streamResponse = await self.httpClient.stream(request, to: "/v1/messages", betaHeaders: betaHeaders)
 
                     var accumulatedText = ""
                     var accumulatedToolCalls: [(id: String, name: String, input: String)] = []
@@ -229,7 +148,7 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                             case .textDelta(let textDelta):
                                 accumulatedText += textDelta.text
                                 // Yield accumulated content for structured output support
-                                let entry = self.createResponseEntry(content: accumulatedText)
+                                let entry = ResponseConverter.createTextResponseEntry(content: accumulatedText)
                                 continuation.yield(entry)
                                 hasYieldedContent = true
 
@@ -263,34 +182,23 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                             // If we accumulated tool calls, store thinking blocks and yield
                             if !accumulatedToolCalls.isEmpty {
                                 if !streamThinkingBlocks.isEmpty {
-                                    self._pendingThinkingBlocks.withLock { $0 = streamThinkingBlocks }
+                                    self.thinkingBlockManager.store(streamThinkingBlocks)
                                 }
-                                let entry = self.createToolCallsEntry(from: accumulatedToolCalls)
+                                let entry = ResponseConverter.createToolCallsEntry(from: accumulatedToolCalls)
                                 continuation.yield(entry)
                             }
 
                             // Yield final content with schema-aware parsing if available
                             if !accumulatedText.isEmpty && accumulatedToolCalls.isEmpty {
-                                if let schema = responseFormat,
-                                   let generatedContent = self.parseJSONWithSchema(accumulatedText, schema: schema) {
-                                    let entry = Transcript.Entry.response(
-                                        Transcript.Response(
-                                            id: UUID().uuidString,
-                                            assetIDs: [],
-                                            segments: [.structure(Transcript.StructuredSegment(
-                                                id: UUID().uuidString,
-                                                source: "claude",
-                                                content: generatedContent
-                                            ))]
-                                        )
-                                    )
+                                if let schema = buildResult.responseSchema,
+                                   let entry = ResponseConverter.createResponseEntry(fromText: accumulatedText, schema: schema) {
                                     continuation.yield(entry)
                                 }
                             }
 
                             // Handle empty response case
                             if !hasYieldedContent && accumulatedToolCalls.isEmpty {
-                                let entry = self.createResponseEntry(content: "")
+                                let entry = ResponseConverter.createTextResponseEntry(content: "")
                                 continuation.yield(entry)
                             }
 
@@ -321,498 +229,6 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
         return true
     }
 
-    // MARK: - Private Helper Methods
-
-    /// Create response entry from MessagesResponse
-    private func createResponseEntry(from response: MessagesResponse) -> Transcript.Entry {
-        var textContent = ""
-
-        for block in response.content {
-            if case .text(let textBlock) = block {
-                textContent += textBlock.text
-            }
-        }
-
-        return createResponseEntry(content: textContent)
-    }
-
-    /// Create tool calls entry from ToolUseBlocks
-    private func createToolCallsEntry(from toolUseBlocks: [ToolUseBlock]) -> Transcript.Entry {
-        let transcriptToolCalls = toolUseBlocks.map { toolUse in
-            let argumentsContent: GeneratedContent
-
-            do {
-                let jsonData = try JSONSerialization.data(withJSONObject: toolUse.input.dictionary, options: [])
-                let jsonString = String(data: jsonData, encoding: .utf8) ?? "{}"
-                argumentsContent = try GeneratedContent(json: jsonString)
-            } catch {
-                argumentsContent = try! GeneratedContent(json: "{}")
-            }
-
-            return Transcript.ToolCall(
-                id: toolUse.id,
-                toolName: toolUse.name,
-                arguments: argumentsContent
-            )
-        }
-
-        return .toolCalls(
-            Transcript.ToolCalls(
-                id: UUID().uuidString,
-                transcriptToolCalls
-            )
-        )
-    }
-
-    /// Create tool calls entry from accumulated streaming data
-    private func createToolCallsEntry(from toolCalls: [(id: String, name: String, input: String)]) -> Transcript.Entry {
-        let transcriptToolCalls = toolCalls.map { toolCall in
-            let argumentsContent: GeneratedContent
-
-            do {
-                argumentsContent = try GeneratedContent(json: toolCall.input)
-            } catch {
-                argumentsContent = try! GeneratedContent(json: "{}")
-            }
-
-            return Transcript.ToolCall(
-                id: toolCall.id,
-                toolName: toolCall.name,
-                arguments: argumentsContent
-            )
-        }
-
-        return .toolCalls(
-            Transcript.ToolCalls(
-                id: UUID().uuidString,
-                transcriptToolCalls
-            )
-        )
-    }
-
-    /// Create response entry from content string
-    private func createResponseEntry(content: String) -> Transcript.Entry {
-        return .response(
-            Transcript.Response(
-                id: UUID().uuidString,
-                assetIDs: [],
-                segments: [.text(Transcript.TextSegment(
-                    id: UUID().uuidString,
-                    content: content
-                ))]
-            )
-        )
-    }
-
-    // MARK: - Extended Thinking Helpers
-
-    /// Resolve thinking configuration and adjust maxTokens, temperature, topK
-    /// per Claude API constraints.
-    ///
-    /// When thinking is enabled:
-    /// - `budget_tokens` must be < `max_tokens`
-    /// - `temperature` and `top_k` must be nil (API rejects them)
-    /// - `max_tokens` is set to `thinkingBudgetTokens + textTokens` so that
-    ///   `budget_tokens < max_tokens` is always satisfied
-    private func resolveThinkingParameters(
-        claudeOptions: ClaudeOptions,
-        requestedMaxTokens: Int?
-    ) -> (ThinkingConfig?, Int, Double?, Int?) {
-        guard let budget = thinkingBudgetTokens else {
-            // Thinking disabled: pass through all parameters as-is
-            let maxTokens = requestedMaxTokens ?? defaultMaxTokens
-            return (nil, maxTokens, claudeOptions.temperature, claudeOptions.topK)
-        }
-
-        // Thinking enabled: budget_tokens must be strictly less than max_tokens
-        let textTokens = requestedMaxTokens ?? defaultMaxTokens
-        let maxTokens = budget + textTokens
-
-        // temperature and top_k are incompatible with extended thinking
-        return (.enabled(budgetTokens: budget), maxTokens, nil, nil)
-    }
-
-    /// Atomically take and clear all pending thinking blocks.
-    private func takePendingThinkingBlocks() -> [ResponseContentBlock] {
-        _pendingThinkingBlocks.withLock { blocks in
-            let result = blocks
-            blocks = []
-            return result
-        }
-    }
-
-    /// Store thinking and redacted thinking blocks from a response
-    /// for inclusion in the next request during tool use conversations.
-    private func storePendingThinkingBlocks(from content: [ResponseContentBlock]) {
-        let thinkingBlocks = content.filter { block in
-            switch block {
-            case .thinking, .redactedThinking:
-                return true
-            default:
-                return false
-            }
-        }
-        if !thinkingBlocks.isEmpty {
-            _pendingThinkingBlocks.withLock { $0 = thinkingBlocks }
-        }
-    }
-
-    /// Inject thinking blocks from the previous response into the last assistant message.
-    ///
-    /// Claude API requires that thinking blocks from an assistant response containing
-    /// tool_use be included unmodified in the subsequent request's assistant message.
-    /// Thinking blocks are prepended before any text or tool_use blocks.
-    private func injectThinkingBlocks(
-        _ thinkingBlocks: [ResponseContentBlock],
-        into messages: [Message]
-    ) -> [Message] {
-        var messages = messages
-        guard let lastAssistantIndex = messages.lastIndex(where: { $0.role == .assistant }) else {
-            return messages
-        }
-
-        // Convert ResponseContentBlock thinking types to request ContentBlock
-        let thinkingContentBlocks: [ContentBlock] = thinkingBlocks.compactMap { block in
-            switch block {
-            case .thinking(let thinkingBlock):
-                return .thinking(thinkingBlock)
-            case .redactedThinking(let redactedBlock):
-                return .redactedThinking(redactedBlock)
-            default:
-                return nil
-            }
-        }
-
-        // Get existing content blocks from the assistant message
-        let existingBlocks: [ContentBlock]
-        switch messages[lastAssistantIndex].content {
-        case .text(let text):
-            existingBlocks = [.text(TextBlock(text: text))]
-        case .blocks(let blocks):
-            existingBlocks = blocks
-        }
-
-        // Prepend thinking blocks before existing content
-        let mergedBlocks = thinkingContentBlocks + existingBlocks
-        messages[lastAssistantIndex] = Message(role: .assistant, content: mergedBlocks)
-
-        return messages
-    }
-
-    // MARK: - Schema-Aware Response Entry Creation
-
-    /// Create response entry using schema for correct GeneratedContent construction
-    /// - Parameters:
-    ///   - response: The Claude API response
-    ///   - schema: The GenerationSchema to use for parsing
-    /// - Returns: A Transcript.Entry with properly typed GeneratedContent
-    private func createResponseEntry(from response: MessagesResponse, schema: GenerationSchema) -> Transcript.Entry {
-        var textContent = ""
-
-        for block in response.content {
-            if case .text(let textBlock) = block {
-                textContent += textBlock.text
-            }
-        }
-
-        // Use schema-aware parsing to construct correct GeneratedContent
-        if let generatedContent = parseJSONWithSchema(textContent, schema: schema) {
-            return .response(
-                Transcript.Response(
-                    id: UUID().uuidString,
-                    assetIDs: [],
-                    segments: [.structure(Transcript.StructuredSegment(
-                        id: UUID().uuidString,
-                        source: "claude",
-                        content: generatedContent
-                    ))]
-                )
-            )
-        }
-
-        // Fallback to text segment if parsing fails
-        return createResponseEntry(content: textContent)
-    }
-
-    // MARK: - Schema-Aware JSON Parsing
-
-    /// Parse JSON using schema information to construct correct GeneratedContent
-    /// Handles Claude's behavior of returning {} for empty arrays
-    /// - Parameters:
-    ///   - json: The JSON string to parse
-    ///   - schema: The GenerationSchema describing the expected structure
-    /// - Returns: GeneratedContent with correct Kind values, or nil if parsing fails
-    private func parseJSONWithSchema(_ json: String, schema: GenerationSchema) -> GeneratedContent? {
-        guard let jsonData = json.data(using: .utf8),
-              let jsonObject = try? JSONSerialization.jsonObject(with: jsonData) else {
-            return nil
-        }
-
-        // Convert GenerationSchema to JSON Schema dictionary
-        guard let schemaData = try? JSONEncoder().encode(schema),
-              let schemaDict = try? JSONSerialization.jsonObject(with: schemaData) as? [String: Any] else {
-            return nil
-        }
-
-        return convertToGeneratedContent(jsonObject, schemaDict: schemaDict)
-    }
-
-    /// Convert a JSON value to GeneratedContent using JSON Schema dictionary
-    /// - Parameters:
-    ///   - value: The JSON value (from JSONSerialization)
-    ///   - schemaDict: The JSON Schema dictionary describing the expected structure
-    /// - Returns: GeneratedContent with the appropriate Kind
-    private func convertToGeneratedContent(_ value: Any, schemaDict: [String: Any]) -> GeneratedContent {
-        // Check if schema expects an array (handles both "type": "array" and "type": ["array", "null"])
-        if isArraySchema(schemaDict) {
-            // Claude returns {} for empty arrays - convert to []
-            if let dict = value as? [String: Any], dict.isEmpty {
-                return GeneratedContent(kind: .array([]))
-            }
-            if let array = value as? [Any] {
-                let itemsSchema = schemaDict["items"] as? [String: Any] ?? [:]
-                let elements = array.map { convertToGeneratedContent($0, schemaDict: itemsSchema) }
-                return GeneratedContent(kind: .array(elements))
-            }
-            // Null value for optional array
-            if value is NSNull {
-                return GeneratedContent(kind: .null)
-            }
-            // Unexpected type for array - return empty array
-            return GeneratedContent(kind: .array([]))
-        }
-
-        // Handle object schema
-        if isObjectSchema(schemaDict) {
-            guard let dict = value as? [String: Any] else {
-                if value is NSNull {
-                    return GeneratedContent(kind: .null)
-                }
-                return GeneratedContent(kind: .structure(properties: [:], orderedKeys: []))
-            }
-
-            let propertiesSchema = schemaDict["properties"] as? [String: [String: Any]] ?? [:]
-            let requiredFields = schemaDict["required"] as? [String] ?? []
-
-            var converted: [String: GeneratedContent] = [:]
-            var orderedKeys: [String] = []
-
-            for (propName, propSchema) in propertiesSchema.sorted(by: { $0.key < $1.key }) {
-                orderedKeys.append(propName)
-                if let propValue = dict[propName] {
-                    converted[propName] = convertToGeneratedContent(propValue, schemaDict: propSchema)
-                } else if !requiredFields.contains(propName) {
-                    converted[propName] = GeneratedContent(kind: .null)
-                }
-            }
-            return GeneratedContent(kind: .structure(properties: converted, orderedKeys: orderedKeys))
-        }
-
-        // Handle anyOf schema (union types including optional arrays)
-        if let anyOfSchemas = schemaDict["anyOf"] as? [[String: Any]] {
-            // Check if this is an optional array (anyOf with array and null)
-            for subSchema in anyOfSchemas {
-                if isArraySchema(subSchema) {
-                    // Claude returns {} for empty arrays - convert to []
-                    if let dict = value as? [String: Any], dict.isEmpty {
-                        return GeneratedContent(kind: .array([]))
-                    }
-                    if let array = value as? [Any] {
-                        let itemsSchema = subSchema["items"] as? [String: Any] ?? [:]
-                        let elements = array.map { convertToGeneratedContent($0, schemaDict: itemsSchema) }
-                        return GeneratedContent(kind: .array(elements))
-                    }
-                }
-            }
-            // Try other schemas in anyOf
-            for subSchema in anyOfSchemas {
-                let result = convertToGeneratedContent(value, schemaDict: subSchema)
-                if case .null = result.kind {
-                    continue
-                }
-                return result
-            }
-            return convertPrimitiveToGeneratedContent(value)
-        }
-
-        // Handle primitive types
-        return convertPrimitiveToGeneratedContent(value)
-    }
-
-    /// Check if schema expects an array type
-    private func isArraySchema(_ schema: [String: Any]) -> Bool {
-        if let type = schema["type"] as? String {
-            return type == "array"
-        }
-        if let types = schema["type"] as? [String] {
-            return types.contains("array")
-        }
-        return false
-    }
-
-    /// Check if schema expects an object type
-    private func isObjectSchema(_ schema: [String: Any]) -> Bool {
-        if let type = schema["type"] as? String {
-            return type == "object"
-        }
-        if let types = schema["type"] as? [String] {
-            return types.contains("object")
-        }
-        return false
-    }
-
-    /// Convert a primitive JSON value to GeneratedContent
-    /// - Parameter value: The primitive value
-    /// - Returns: GeneratedContent with the appropriate Kind
-    private func convertPrimitiveToGeneratedContent(_ value: Any) -> GeneratedContent {
-        switch value {
-        case let str as String:
-            return GeneratedContent(kind: .string(str))
-        case let num as NSNumber:
-            // Distinguish between Bool and Number
-            if CFGetTypeID(num) == CFBooleanGetTypeID() {
-                return GeneratedContent(kind: .bool(num.boolValue))
-            }
-            return GeneratedContent(kind: .number(num.doubleValue))
-        case let bool as Bool:
-            return GeneratedContent(kind: .bool(bool))
-        case is NSNull:
-            return GeneratedContent(kind: .null)
-        case let dict as [String: Any]:
-            // Nested object without schema - try to preserve structure
-            var converted: [String: GeneratedContent] = [:]
-            let orderedKeys = Array(dict.keys).sorted()
-            for key in orderedKeys {
-                if let propValue = dict[key] {
-                    converted[key] = convertPrimitiveToGeneratedContent(propValue)
-                }
-            }
-            return GeneratedContent(kind: .structure(properties: converted, orderedKeys: orderedKeys))
-        case let array as [Any]:
-            let elements = array.map { convertPrimitiveToGeneratedContent($0) }
-            return GeneratedContent(kind: .array(elements))
-        default:
-            return GeneratedContent(String(describing: value))
-        }
-    }
-
-    /// Convert GenerationSchema to Claude's native OutputFormat for structured outputs
-    private func convertToOutputFormat(_ schema: GenerationSchema) -> OutputFormat? {
-        // GenerationSchema is Encodable, so we can serialize it to JSON
-        // and then convert to Claude's JSONSchema format
-        guard let jsonData = try? JSONEncoder().encode(schema),
-              let schemaDict = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
-            return nil
-        }
-
-        // Convert the serialized schema to Claude's JSONSchema format
-        let jsonSchema = convertDictToJSONSchema(schemaDict)
-        return OutputFormat(schema: jsonSchema)
-    }
-
-    /// Convert a dictionary representation of GenerationSchema to JSONSchema
-    private func convertDictToJSONSchema(_ dict: [String: Any]) -> JSONSchema {
-        var properties: [String: JSONSchemaProperty] = [:]
-        var requiredFields: [String] = []
-
-        // Extract properties from the schema dictionary
-        // GenerationSchema encodes properties as a dictionary { "name": { schema } }
-        if let propsDict = dict["properties"] as? [String: [String: Any]] {
-            for (name, propDict) in propsDict {
-                let prop = convertDictToJSONSchemaProperty(propDict)
-                properties[name] = prop
-            }
-        }
-
-        // Extract required fields
-        if let required = dict["required"] as? [String] {
-            requiredFields = required
-        } else {
-            // If no required array, assume all properties are required
-            requiredFields = Array(properties.keys)
-        }
-
-        return JSONSchema(
-            type: "object",
-            properties: properties.isEmpty ? nil : properties,
-            required: requiredFields.isEmpty ? nil : requiredFields,
-            additionalProperties: false,
-            description: dict["description"] as? String
-        )
-    }
-
-    /// Convert a property dictionary to JSONSchemaProperty
-    private func convertDictToJSONSchemaProperty(_ dict: [String: Any]) -> JSONSchemaProperty {
-        let typeName = dict["type"] as? String ?? "object"
-        let description = dict["description"] as? String
-
-        // Handle arrays with items
-        if typeName == "array" {
-            if let itemsDict = dict["items"] as? [String: Any] {
-                let itemProp = convertDictToJSONSchemaProperty(itemsDict)
-                return JSONSchemaProperty(
-                    type: "array",
-                    description: description,
-                    items: itemProp
-                )
-            } else {
-                // Array without items schema
-                return JSONSchemaProperty(
-                    type: "array",
-                    description: description,
-                    items: JSONSchemaProperty(type: "string")
-                )
-            }
-        }
-
-        // Handle nested objects with properties
-        if typeName == "object" {
-            if let nestedPropsDict = dict["properties"] as? [String: [String: Any]] {
-                var nested: [String: JSONSchemaProperty] = [:]
-                for (name, propDict) in nestedPropsDict {
-                    nested[name] = convertDictToJSONSchemaProperty(propDict)
-                }
-                let nestedRequired = dict["required"] as? [String] ?? Array(nested.keys)
-                return JSONSchemaProperty(
-                    type: "object",
-                    description: description,
-                    properties: nested.isEmpty ? nil : nested,
-                    required: nestedRequired.isEmpty ? nil : nestedRequired,
-                    additionalProperties: false
-                )
-            } else {
-                // Object without properties - still needs additionalProperties: false
-                return JSONSchemaProperty(
-                    type: "object",
-                    description: description,
-                    additionalProperties: false
-                )
-            }
-        }
-
-        // Simple types: string, number, integer, boolean
-        return JSONSchemaProperty(
-            type: typeName,
-            description: description
-        )
-    }
-
-    /// Map Swift type names to JSON Schema types
-    private func mapSwiftTypeToJSONType(_ swiftType: String) -> String {
-        let lowercased = swiftType.lowercased()
-        if lowercased.contains("string") {
-            return "string"
-        } else if lowercased.contains("int") {
-            return "integer"
-        } else if lowercased.contains("double") || lowercased.contains("float") {
-            return "number"
-        } else if lowercased.contains("bool") {
-            return "boolean"
-        } else if lowercased.contains("array") || swiftType.hasPrefix("[") {
-            return "array"
-        }
-        return "object"
-    }
 }
 
 // MARK: - Convenience Model Constants

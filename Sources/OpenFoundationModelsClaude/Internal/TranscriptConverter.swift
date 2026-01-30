@@ -22,7 +22,7 @@ internal struct TranscriptConverter {
         // Claude requires tool_result to reference the tool_use ID, not a separate ID
         var pendingToolCallIds: [String] = []
 
-        for entry in transcript._entries {
+        for entry in transcript {
             switch entry {
             case .instructions(let instructions):
                 // Convert instructions to system prompt (Claude uses separate system param)
@@ -52,7 +52,7 @@ internal struct TranscriptConverter {
                 let blocks = convertToolCallsToBlocks(toolCalls)
                 messages.append(Message(role: .assistant, content: blocks))
                 // Store the tool call IDs for matching with subsequent tool outputs
-                pendingToolCallIds = toolCalls._calls.map { $0.id }
+                pendingToolCallIds = toolCalls.map { $0.id }
 
             case .toolOutput(let toolOutput):
                 // Accumulate tool results to be sent as a user message
@@ -85,7 +85,7 @@ internal struct TranscriptConverter {
 
     /// Extract tool definitions from Transcript
     static func extractTools(from transcript: Transcript) throws -> [Tool]? {
-        for entry in transcript._entries.reversed() {
+        for entry in transcript.reversed() {
             if case .instructions(let instructions) = entry,
                !instructions.toolDefinitions.isEmpty {
                 return try instructions.toolDefinitions.map { try convertToolDefinition($0) }
@@ -98,7 +98,7 @@ internal struct TranscriptConverter {
 
     /// Extract response format with schema from the most recent prompt
     static func extractResponseFormat(from transcript: Transcript) -> GenerationSchema? {
-        for entry in transcript._entries.reversed() {
+        for entry in transcript.reversed() {
             if case .prompt(let prompt) = entry,
                let responseFormat = prompt.responseFormat,
                let schema = responseFormat._schema {
@@ -112,7 +112,7 @@ internal struct TranscriptConverter {
 
     /// Extract generation options from the most recent prompt
     static func extractOptions(from transcript: Transcript) -> GenerationOptions? {
-        for entry in transcript._entries.reversed() {
+        for entry in transcript.reversed() {
             if case .prompt(let prompt) = entry {
                 return prompt.options
             }
@@ -142,11 +142,7 @@ internal struct TranscriptConverter {
 
     /// Format GeneratedContent as string
     private static func formatGeneratedContent(_ content: GeneratedContent) -> String {
-        if let jsonData = try? JSONEncoder().encode(content),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            return jsonString
-        }
-        return "[GeneratedContent]"
+        content.jsonString
     }
 
     /// Convert Transcript.ToolDefinition to Claude Tool
@@ -170,7 +166,7 @@ internal struct TranscriptConverter {
     private static func convertToolCallsToBlocks(_ toolCalls: Transcript.ToolCalls) -> [ContentBlock] {
         var blocks: [ContentBlock] = []
 
-        for toolCall in toolCalls._calls {
+        for toolCall in toolCalls {
             let inputDict = convertGeneratedContentToDict(toolCall.arguments)
 
             let block = ContentBlock.toolUse(ToolUseBlock(

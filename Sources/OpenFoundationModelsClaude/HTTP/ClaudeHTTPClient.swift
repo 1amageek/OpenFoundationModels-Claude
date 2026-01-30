@@ -48,10 +48,14 @@ public actor ClaudeHTTPClient {
             }
 
             if httpResponse.statusCode >= 400 {
-                if let errorResponse = try? decoder.decode(ClaudeErrorResponse.self, from: data) {
+                do {
+                    let errorResponse = try decoder.decode(ClaudeErrorResponse.self, from: data)
                     throw errorResponse
+                } catch let knownError as ClaudeErrorResponse {
+                    throw knownError
+                } catch {
+                    throw ClaudeHTTPError.statusError(httpResponse.statusCode, data)
                 }
-                throw ClaudeHTTPError.statusError(httpResponse.statusCode, data)
             }
 
             return try decoder.decode(Response.self, from: data)
@@ -59,7 +63,7 @@ public actor ClaudeHTTPClient {
             if error.code == .notConnectedToInternet || error.code == .cannotConnectToHost {
                 throw ClaudeHTTPError.connectionError("Cannot connect to Claude API at \(configuration.baseURL)")
             }
-            throw ClaudeHTTPError.networkError(error)
+            throw ClaudeHTTPError.networkError(error.localizedDescription)
         } catch {
             throw error
         }
@@ -100,35 +104,41 @@ public actor ClaudeHTTPClient {
                             errorData.append(byte)
                         }
 
-                        if let errorResponse = try? decoder.decode(ClaudeErrorResponse.self, from: errorData) {
+                        do {
+                            let errorResponse = try decoder.decode(ClaudeErrorResponse.self, from: errorData)
                             continuation.finish(throwing: errorResponse)
-                        } else {
+                        } catch _ as DecodingError {
                             continuation.finish(throwing: ClaudeHTTPError.statusError(httpResponse.statusCode, errorData))
+                        } catch {
+                            continuation.finish(throwing: error)
                         }
                         return
                     }
 
-                    // Process SSE stream
-                    var buffer = ""
+                    // Process SSE stream using byte buffer with UTF-8 safe decoding.
+                    // Detect event boundaries at byte level (\n\n = 0x0A 0x0A),
+                    // then decode complete event strings as UTF-8.
+                    let doubleNewline = Data([0x0A, 0x0A])
+                    var buffer = Data()
 
                     for try await byte in asyncBytes {
-                        buffer.append(Character(UnicodeScalar(byte)))
+                        buffer.append(byte)
 
-                        // Process complete SSE events (double newline separated)
-                        while let eventEnd = buffer.range(of: "\n\n") {
-                            let eventData = String(buffer[..<eventEnd.lowerBound])
-                            buffer.removeSubrange(..<eventEnd.upperBound)
+                        while let range = buffer.range(of: doubleNewline) {
+                            let eventData = buffer[buffer.startIndex..<range.lowerBound]
+                            buffer.removeSubrange(buffer.startIndex..<range.upperBound)
 
-                            if let event = parseSSEEvent(eventData) {
+                            guard let eventString = String(data: eventData, encoding: .utf8) else {
+                                continue
+                            }
+
+                            if let event = self.parseSSEEvent(eventString) {
                                 continuation.yield(event)
 
-                                // Check for message_stop to finish
                                 if case .messageStop = event {
                                     continuation.finish()
                                     return
                                 }
-
-                                // Check for error
                                 if case .error = event {
                                     continuation.finish()
                                     return
@@ -154,7 +164,6 @@ public actor ClaudeHTTPClient {
 
         for line in data.split(separator: "\n", omittingEmptySubsequences: false) {
             let lineStr = String(line)
-
             if lineStr.hasPrefix("event: ") {
                 eventType = String(lineStr.dropFirst(7))
             } else if lineStr.hasPrefix("data: ") {
@@ -216,9 +225,9 @@ public actor ClaudeHTTPClient {
 public enum ClaudeHTTPError: Error, LocalizedError, Sendable {
     case invalidResponse
     case statusError(Int, Data?)
-    case networkError(Error)
+    case networkError(String)
     case connectionError(String)
-    case decodingError(Error)
+    case decodingError(String)
 
     public var errorDescription: String? {
         switch self {
@@ -226,12 +235,12 @@ public enum ClaudeHTTPError: Error, LocalizedError, Sendable {
             return "Invalid response received from Claude API"
         case .statusError(let code, _):
             return "HTTP error with status code: \(code)"
-        case .networkError(let error):
-            return "Network error: \(error.localizedDescription)"
+        case .networkError(let message):
+            return "Network error: \(message)"
         case .connectionError(let message):
             return message
-        case .decodingError(let error):
-            return "Failed to decode response: \(error.localizedDescription)"
+        case .decodingError(let message):
+            return "Failed to decode response: \(message)"
         }
     }
 }

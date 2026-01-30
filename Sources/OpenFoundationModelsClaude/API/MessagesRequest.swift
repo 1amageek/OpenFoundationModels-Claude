@@ -1,4 +1,5 @@
 import Foundation
+import OpenFoundationModels
 
 /// Request for /v1/messages endpoint
 struct MessagesRequest: Codable, Sendable {
@@ -60,92 +61,24 @@ struct MessagesRequest: Codable, Sendable {
     }
 }
 
-/// Output format for structured outputs
+/// Output format for structured outputs.
+/// Wraps a GenerationSchema which already encodes to valid JSON Schema.
 struct OutputFormat: Codable, Sendable {
     let type: String
-    let schema: JSONSchema
+    let schema: JSONValue
 
-    init(schema: JSONSchema) {
+    init(schema: GenerationSchema) throws {
         self.type = "json_schema"
-        self.schema = schema
+        let data = try JSONEncoder().encode(schema)
+        guard let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw OutputFormatError.invalidSchema
+        }
+        self.schema = JSONValue(dict)
     }
 }
 
-/// JSON Schema for structured outputs
-struct JSONSchema: Codable, Sendable {
-    let type: String
-    let properties: [String: JSONSchemaProperty]?
-    let required: [String]?
-    let additionalProperties: Bool?
-    let items: JSONSchemaProperty?
-    let description: String?
-
-    init(
-        type: String,
-        properties: [String: JSONSchemaProperty]? = nil,
-        required: [String]? = nil,
-        additionalProperties: Bool? = false,
-        items: JSONSchemaProperty? = nil,
-        description: String? = nil
-    ) {
-        self.type = type
-        self.properties = properties
-        self.required = required
-        self.additionalProperties = additionalProperties
-        self.items = items
-        self.description = description
-    }
-}
-
-/// JSON Schema property definition
-struct JSONSchemaProperty: Codable, Sendable {
-    let type: String?
-    let description: String?
-    let items: JSONSchemaPropertyBox?
-    let properties: [String: JSONSchemaProperty]?
-    let required: [String]?
-    let additionalProperties: Bool?
-    let `enum`: [String]?
-
-    init(
-        type: String? = nil,
-        description: String? = nil,
-        items: JSONSchemaProperty? = nil,
-        properties: [String: JSONSchemaProperty]? = nil,
-        required: [String]? = nil,
-        additionalProperties: Bool? = nil,
-        enumValues: [String]? = nil
-    ) {
-        self.type = type
-        self.description = description
-        self.items = items.map { JSONSchemaPropertyBox($0) }
-        self.properties = properties
-        self.required = required
-        self.additionalProperties = additionalProperties
-        self.enum = enumValues
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case type, description, items, properties, required, additionalProperties
-        case `enum` = "enum"
-    }
-}
-
-/// Box wrapper to handle recursive JSONSchemaProperty
-final class JSONSchemaPropertyBox: Codable, @unchecked Sendable {
-    let value: JSONSchemaProperty
-
-    init(_ value: JSONSchemaProperty) {
-        self.value = value
-    }
-
-    required init(from decoder: Decoder) throws {
-        self.value = try JSONSchemaProperty(from: decoder)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        try value.encode(to: encoder)
-    }
+enum OutputFormatError: Error {
+    case invalidSchema
 }
 
 /// Request metadata

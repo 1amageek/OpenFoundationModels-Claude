@@ -36,8 +36,7 @@ struct ClaudeHTTPClientTests {
 
     @Test("ClaudeHTTPError networkError wraps underlying error")
     func httpErrorNetworkErrorDescription() {
-        let urlError = URLError(.timedOut)
-        let error = ClaudeHTTPError.networkError(urlError)
+        let error = ClaudeHTTPError.networkError("The operation couldn't be completed.")
 
         #expect(error.errorDescription?.contains("Network error") == true)
     }
@@ -51,10 +50,7 @@ struct ClaudeHTTPClientTests {
 
     @Test("ClaudeHTTPError decodingError wraps underlying error")
     func httpErrorDecodingErrorDescription() {
-        let decodingError = DecodingError.dataCorrupted(
-            DecodingError.Context(codingPath: [], debugDescription: "Invalid JSON")
-        )
-        let error = ClaudeHTTPError.decodingError(decodingError)
+        let error = ClaudeHTTPError.decodingError("Invalid JSON")
 
         #expect(error.errorDescription?.contains("Failed to decode") == true)
     }

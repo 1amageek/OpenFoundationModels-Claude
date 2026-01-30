@@ -5,6 +5,8 @@ enum ContentBlock: Codable, Sendable {
     case text(TextBlock)
     case toolUse(ToolUseBlock)
     case toolResult(ToolResultBlock)
+    case thinking(ThinkingBlock)
+    case redactedThinking(RedactedThinkingBlock)
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -24,6 +26,12 @@ enum ContentBlock: Codable, Sendable {
         case "tool_result":
             let block = try ToolResultBlock(from: decoder)
             self = .toolResult(block)
+        case "thinking":
+            let block = try ThinkingBlock(from: decoder)
+            self = .thinking(block)
+        case "redacted_thinking":
+            let block = try RedactedThinkingBlock(from: decoder)
+            self = .redactedThinking(block)
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .type,
@@ -40,6 +48,10 @@ enum ContentBlock: Codable, Sendable {
         case .toolUse(let block):
             try block.encode(to: encoder)
         case .toolResult(let block):
+            try block.encode(to: encoder)
+        case .thinking(let block):
+            try block.encode(to: encoder)
+        case .redactedThinking(let block):
             try block.encode(to: encoder)
         }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import OpenFoundationModels
 
 // MARK: - Claude Options
@@ -29,8 +30,22 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
     internal let modelName: String
     internal let configuration: ClaudeConfiguration
 
-    /// Default max tokens for responses
+    /// Default max tokens for text output (excluding thinking budget)
     public let defaultMaxTokens: Int
+
+    /// Extended thinking budget in tokens.
+    /// When set, enables extended thinking for all requests from this model instance.
+    ///
+    /// Constraints enforced by the Claude API:
+    /// - Minimum: 1024 tokens
+    /// - Must be less than `max_tokens` sent in the request
+    /// - Incompatible with `temperature` and `top_k` (they will be omitted)
+    /// - Only `tool_choice: auto` or `none` is allowed (not `any` or specific tool)
+    public let thinkingBudgetTokens: Int?
+
+    /// Stores thinking blocks from the last assistant response that contained tool_use.
+    /// These must be included in the next request's assistant message per Claude API requirements.
+    private let _pendingThinkingBlocks = Mutex<[ResponseContentBlock]>([])
 
     // MARK: - LanguageModel Protocol Compliance
     public var isAvailable: Bool { true }
@@ -41,15 +56,18 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
     /// - Parameters:
     ///   - configuration: Claude configuration
     ///   - modelName: Name of the model (e.g., "claude-sonnet-4-20250514", "claude-3-5-haiku-20241022")
-    ///   - defaultMaxTokens: Default max tokens for responses (default: 4096)
+    ///   - defaultMaxTokens: Default max tokens for text output (default: 4096)
+    ///   - thinkingBudgetTokens: Extended thinking budget. nil disables thinking. Minimum 1024.
     public init(
         configuration: ClaudeConfiguration,
         modelName: String,
-        defaultMaxTokens: Int = 4096
+        defaultMaxTokens: Int = 4096,
+        thinkingBudgetTokens: Int? = nil
     ) {
         self.configuration = configuration
         self.modelName = modelName
         self.defaultMaxTokens = defaultMaxTokens
+        self.thinkingBudgetTokens = thinkingBudgetTokens
         self.httpClient = ClaudeHTTPClient(configuration: configuration)
     }
 
@@ -57,15 +75,25 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
 
     public func generate(transcript: Transcript, options: GenerationOptions?) async throws -> Transcript.Entry {
         // Convert Transcript to Claude format
-        let (messages, systemPrompt) = TranscriptConverter.buildMessages(from: transcript)
+        var (messages, systemPrompt) = TranscriptConverter.buildMessages(from: transcript)
         let tools = try TranscriptConverter.extractTools(from: transcript)
+
+        // Inject pending thinking blocks into the last assistant message
+        // (required by Claude API for tool use conversations with extended thinking)
+        let storedThinkingBlocks = takePendingThinkingBlocks()
+        if !storedThinkingBlocks.isEmpty {
+            messages = injectThinkingBlocks(storedThinkingBlocks, into: messages)
+        }
 
         // Use the options from the transcript if not provided
         let finalOptions = options ?? TranscriptConverter.extractOptions(from: transcript)
         let claudeOptions = finalOptions?.toClaudeOptions() ?? ClaudeOptions(temperature: nil, topK: nil, topP: nil)
 
-        // Determine max tokens
-        let maxTokens = finalOptions?.maximumResponseTokens ?? defaultMaxTokens
+        // Resolve thinking, maxTokens, and temperature based on thinking mode
+        let (thinking, maxTokens, temperature, topK) = resolveThinkingParameters(
+            claudeOptions: claudeOptions,
+            requestedMaxTokens: finalOptions?.maximumResponseTokens
+        )
 
         // Check for response format (structured output)
         let responseFormat = TranscriptConverter.extractResponseFormat(from: transcript)
@@ -83,9 +111,10 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
             tools: tools,
             toolChoice: tools != nil ? .auto() : nil,
             stream: false,
-            temperature: claudeOptions.temperature,
-            topK: claudeOptions.topK,
+            temperature: temperature,
+            topK: topK,
             topP: claudeOptions.topP,
+            thinking: thinking,
             outputFormat: outputFormat
         )
 
@@ -100,6 +129,8 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
         }
 
         if !toolUseBlocks.isEmpty {
+            // Store thinking blocks for the next request in the tool use loop
+            storePendingThinkingBlocks(from: response.content)
             return createToolCallsEntry(from: toolUseBlocks)
         }
 
@@ -116,15 +147,24 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
             Task {
                 do {
                     // Convert Transcript to Claude format
-                    let (messages, systemPrompt) = TranscriptConverter.buildMessages(from: transcript)
+                    var (messages, systemPrompt) = TranscriptConverter.buildMessages(from: transcript)
                     let tools = try TranscriptConverter.extractTools(from: transcript)
+
+                    // Inject pending thinking blocks into the last assistant message
+                    let storedThinkingBlocks = self.takePendingThinkingBlocks()
+                    if !storedThinkingBlocks.isEmpty {
+                        messages = self.injectThinkingBlocks(storedThinkingBlocks, into: messages)
+                    }
 
                     // Use the options from the transcript if not provided
                     let finalOptions = options ?? TranscriptConverter.extractOptions(from: transcript)
                     let claudeOptions = finalOptions?.toClaudeOptions() ?? ClaudeOptions(temperature: nil, topK: nil, topP: nil)
 
-                    // Determine max tokens
-                    let maxTokens = finalOptions?.maximumResponseTokens ?? defaultMaxTokens
+                    // Resolve thinking parameters
+                    let (thinking, maxTokens, temperature, topK) = self.resolveThinkingParameters(
+                        claudeOptions: claudeOptions,
+                        requestedMaxTokens: finalOptions?.maximumResponseTokens
+                    )
 
                     // Check for response format
                     let responseFormat = TranscriptConverter.extractResponseFormat(from: transcript)
@@ -135,25 +175,32 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
 
                     // Build request
                     let request = MessagesRequest(
-                        model: modelName,
+                        model: self.modelName,
                         messages: messages,
                         maxTokens: maxTokens,
                         system: systemPrompt,
                         tools: tools,
                         toolChoice: tools != nil ? .auto() : nil,
                         stream: true,
-                        temperature: claudeOptions.temperature,
-                        topK: claudeOptions.topK,
+                        temperature: temperature,
+                        topK: topK,
                         topP: claudeOptions.topP,
+                        thinking: thinking,
                         outputFormat: outputFormat
                     )
 
-                    let streamResponse = await httpClient.stream(request, to: "/v1/messages", betaHeaders: betaHeaders)
+                    let streamResponse = await self.httpClient.stream(request, to: "/v1/messages", betaHeaders: betaHeaders)
 
                     var accumulatedText = ""
                     var accumulatedToolCalls: [(id: String, name: String, input: String)] = []
                     var currentToolCallIndex: Int? = nil
                     var hasYieldedContent = false
+
+                    // Accumulate thinking blocks for tool use conversations
+                    var accumulatedThinkingText = ""
+                    var accumulatedSignature = ""
+                    var isInThinkingBlock = false
+                    var streamThinkingBlocks: [ResponseContentBlock] = []
 
                     for try await event in streamResponse {
                         switch event {
@@ -172,7 +219,9 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                                     input: ""
                                 ))
                             case .thinking:
-                                break
+                                isInThinkingBlock = true
+                                accumulatedThinkingText = ""
+                                accumulatedSignature = ""
                             }
 
                         case .contentBlockDelta(let deltaEvent):
@@ -180,7 +229,7 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                             case .textDelta(let textDelta):
                                 accumulatedText += textDelta.text
                                 // Yield accumulated content for structured output support
-                                let entry = createResponseEntry(content: accumulatedText)
+                                let entry = self.createResponseEntry(content: accumulatedText)
                                 continuation.yield(entry)
                                 hasYieldedContent = true
 
@@ -189,23 +238,34 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                                     accumulatedToolCalls[index].input += jsonDelta.partialJson
                                 }
 
-                            case .thinkingDelta:
-                                break
+                            case .thinkingDelta(let thinkingDelta):
+                                accumulatedThinkingText += thinkingDelta.thinking
 
-                            case .signatureDelta:
-                                break
+                            case .signatureDelta(let signatureDelta):
+                                accumulatedSignature += signatureDelta.signature
                             }
 
                         case .contentBlockStop:
+                            if isInThinkingBlock {
+                                let thinkingBlock = ThinkingBlock(
+                                    thinking: accumulatedThinkingText,
+                                    signature: accumulatedSignature.isEmpty ? nil : accumulatedSignature
+                                )
+                                streamThinkingBlocks.append(.thinking(thinkingBlock))
+                                isInThinkingBlock = false
+                            }
                             currentToolCallIndex = nil
 
                         case .messageDelta:
                             break
 
                         case .messageStop:
-                            // If we accumulated tool calls, yield them
+                            // If we accumulated tool calls, store thinking blocks and yield
                             if !accumulatedToolCalls.isEmpty {
-                                let entry = createToolCallsEntry(from: accumulatedToolCalls)
+                                if !streamThinkingBlocks.isEmpty {
+                                    self._pendingThinkingBlocks.withLock { $0 = streamThinkingBlocks }
+                                }
+                                let entry = self.createToolCallsEntry(from: accumulatedToolCalls)
                                 continuation.yield(entry)
                             }
 
@@ -230,7 +290,7 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
 
                             // Handle empty response case
                             if !hasYieldedContent && accumulatedToolCalls.isEmpty {
-                                let entry = createResponseEntry(content: "")
+                                let entry = self.createResponseEntry(content: "")
                                 continuation.yield(entry)
                             }
 
@@ -342,6 +402,101 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
                 ))]
             )
         )
+    }
+
+    // MARK: - Extended Thinking Helpers
+
+    /// Resolve thinking configuration and adjust maxTokens, temperature, topK
+    /// per Claude API constraints.
+    ///
+    /// When thinking is enabled:
+    /// - `budget_tokens` must be < `max_tokens`
+    /// - `temperature` and `top_k` must be nil (API rejects them)
+    /// - `max_tokens` is set to `thinkingBudgetTokens + textTokens` so that
+    ///   `budget_tokens < max_tokens` is always satisfied
+    private func resolveThinkingParameters(
+        claudeOptions: ClaudeOptions,
+        requestedMaxTokens: Int?
+    ) -> (ThinkingConfig?, Int, Double?, Int?) {
+        guard let budget = thinkingBudgetTokens else {
+            // Thinking disabled: pass through all parameters as-is
+            let maxTokens = requestedMaxTokens ?? defaultMaxTokens
+            return (nil, maxTokens, claudeOptions.temperature, claudeOptions.topK)
+        }
+
+        // Thinking enabled: budget_tokens must be strictly less than max_tokens
+        let textTokens = requestedMaxTokens ?? defaultMaxTokens
+        let maxTokens = budget + textTokens
+
+        // temperature and top_k are incompatible with extended thinking
+        return (.enabled(budgetTokens: budget), maxTokens, nil, nil)
+    }
+
+    /// Atomically take and clear all pending thinking blocks.
+    private func takePendingThinkingBlocks() -> [ResponseContentBlock] {
+        _pendingThinkingBlocks.withLock { blocks in
+            let result = blocks
+            blocks = []
+            return result
+        }
+    }
+
+    /// Store thinking and redacted thinking blocks from a response
+    /// for inclusion in the next request during tool use conversations.
+    private func storePendingThinkingBlocks(from content: [ResponseContentBlock]) {
+        let thinkingBlocks = content.filter { block in
+            switch block {
+            case .thinking, .redactedThinking:
+                return true
+            default:
+                return false
+            }
+        }
+        if !thinkingBlocks.isEmpty {
+            _pendingThinkingBlocks.withLock { $0 = thinkingBlocks }
+        }
+    }
+
+    /// Inject thinking blocks from the previous response into the last assistant message.
+    ///
+    /// Claude API requires that thinking blocks from an assistant response containing
+    /// tool_use be included unmodified in the subsequent request's assistant message.
+    /// Thinking blocks are prepended before any text or tool_use blocks.
+    private func injectThinkingBlocks(
+        _ thinkingBlocks: [ResponseContentBlock],
+        into messages: [Message]
+    ) -> [Message] {
+        var messages = messages
+        guard let lastAssistantIndex = messages.lastIndex(where: { $0.role == .assistant }) else {
+            return messages
+        }
+
+        // Convert ResponseContentBlock thinking types to request ContentBlock
+        let thinkingContentBlocks: [ContentBlock] = thinkingBlocks.compactMap { block in
+            switch block {
+            case .thinking(let thinkingBlock):
+                return .thinking(thinkingBlock)
+            case .redactedThinking(let redactedBlock):
+                return .redactedThinking(redactedBlock)
+            default:
+                return nil
+            }
+        }
+
+        // Get existing content blocks from the assistant message
+        let existingBlocks: [ContentBlock]
+        switch messages[lastAssistantIndex].content {
+        case .text(let text):
+            existingBlocks = [.text(TextBlock(text: text))]
+        case .blocks(let blocks):
+            existingBlocks = blocks
+        }
+
+        // Prepend thinking blocks before existing content
+        let mergedBlocks = thinkingContentBlocks + existingBlocks
+        messages[lastAssistantIndex] = Message(role: .assistant, content: mergedBlocks)
+
+        return messages
     }
 
     // MARK: - Schema-Aware Response Entry Creation
@@ -692,42 +847,42 @@ extension ClaudeLanguageModel {
     // MARK: - Factory Methods
 
     /// Create Claude Opus 4.5 model
-    public static func opus4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: opus4_5, defaultMaxTokens: defaultMaxTokens)
+    public static func opus4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: opus4_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
     /// Create Claude Sonnet 4.5 model
-    public static func sonnet4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet4_5, defaultMaxTokens: defaultMaxTokens)
+    public static func sonnet4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet4_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
     /// Create Claude Sonnet 4 model
-    public static func sonnet4(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet4, defaultMaxTokens: defaultMaxTokens)
+    public static func sonnet4(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet4, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
     /// Create Claude Opus 4 model
-    public static func opus4(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: opus4, defaultMaxTokens: defaultMaxTokens)
+    public static func opus4(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: opus4, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
     /// Create Claude Haiku 4.5 model
-    public static func haiku4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: haiku4_5, defaultMaxTokens: defaultMaxTokens)
+    public static func haiku4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: haiku4_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
     /// Create Claude 3.7 Sonnet model
-    public static func sonnet3_7(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet3_7, defaultMaxTokens: defaultMaxTokens)
+    public static func sonnet3_7(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet3_7, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
     /// Create Claude 3.5 Haiku model
-    public static func haiku3_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: haiku3_5, defaultMaxTokens: defaultMaxTokens)
+    public static func haiku3_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: haiku3_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
     /// Create Claude 3.5 Sonnet model (legacy)
-    public static func sonnet3_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet3_5, defaultMaxTokens: defaultMaxTokens)
+    public static func sonnet3_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet3_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 }

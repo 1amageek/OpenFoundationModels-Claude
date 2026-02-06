@@ -15,22 +15,35 @@ public struct ClaudeConfiguration: Sendable {
     /// API version (default: 2023-06-01)
     public let apiVersion: String
 
+    /// Full endpoint URL override (e.g., proxy or Claude-compatible API)
+    /// If set, this URL is used instead of baseURL + /v1/messages.
+    public let endpointURL: URL?
+
+    /// Additional headers merged into every request
+    public let additionalHeaders: [String: String]
+
     /// Initialize Claude configuration
     /// - Parameters:
     ///   - apiKey: API key for authentication
     ///   - baseURL: Base URL for Claude API
     ///   - timeout: Request timeout in seconds
     ///   - apiVersion: API version header value
+    ///   - endpointURL: Full endpoint URL override (optional)
+    ///   - additionalHeaders: Additional headers merged into every request
     public init(
         apiKey: String,
         baseURL: URL = URL(string: "https://api.anthropic.com")!,
         timeout: TimeInterval = 120.0,
-        apiVersion: String = "2023-06-01"
+        apiVersion: String = "2023-06-01",
+        endpointURL: URL? = nil,
+        additionalHeaders: [String: String] = [:]
     ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.timeout = timeout
         self.apiVersion = apiVersion
+        self.endpointURL = endpointURL
+        self.additionalHeaders = additionalHeaders
     }
 }
 

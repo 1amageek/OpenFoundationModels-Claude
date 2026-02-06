@@ -118,7 +118,24 @@ let config = ClaudeConfiguration(
     apiKey: "your-api-key",
     baseURL: URL(string: "https://api.anthropic.com")!,
     timeout: 120.0,
-    apiVersion: "2023-06-01"
+    apiVersion: "2023-06-01",
+    endpointURL: nil,
+    additionalHeaders: [:]
+)
+```
+
+### Custom Endpoint and Headers
+
+Use a full endpoint URL and extra headers when routing through a proxy or a Claude-compatible API.
+
+```swift
+let config = ClaudeConfiguration(
+    apiKey: "proxy-token",
+    endpointURL: URL(string: "https://proxy.example.com/v1/messages")!,
+    additionalHeaders: [
+        "Authorization": "Bearer proxy-token",
+        "X-Proxy-Model": "claude-compatible-model"
+    ]
 )
 ```
 

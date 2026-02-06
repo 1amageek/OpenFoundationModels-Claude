@@ -28,7 +28,7 @@ public actor ClaudeHTTPClient {
         to endpoint: String,
         betaHeaders: [String]? = nil
     ) async throws -> Response {
-        let url = configuration.baseURL.appendingPathComponent(endpoint)
+        let url = resolveEndpointURL(for: endpoint)
 
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
@@ -38,6 +38,7 @@ public actor ClaudeHTTPClient {
         if let betaHeaders = betaHeaders, !betaHeaders.isEmpty {
             urlRequest.setValue(betaHeaders.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
         }
+        applyAdditionalHeaders(to: &urlRequest)
         urlRequest.httpBody = try encoder.encode(request)
 
         do {
@@ -79,7 +80,7 @@ public actor ClaudeHTTPClient {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    let url = configuration.baseURL.appendingPathComponent(endpoint)
+                    let url = self.resolveEndpointURL(for: endpoint)
 
                     var urlRequest = URLRequest(url: url)
                     urlRequest.httpMethod = "POST"
@@ -89,6 +90,7 @@ public actor ClaudeHTTPClient {
                     if let betaHeaders = betaHeadersCopy, !betaHeaders.isEmpty {
                         urlRequest.setValue(betaHeaders.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
                     }
+                    self.applyAdditionalHeaders(to: &urlRequest)
                     urlRequest.httpBody = try encoder.encode(request)
 
                     let (asyncBytes, response) = try await session.bytes(for: urlRequest)
@@ -216,6 +218,22 @@ public actor ClaudeHTTPClient {
             print("Failed to parse SSE event '\(type)': \(error)")
             #endif
             return nil
+        }
+    }
+
+    private func resolveEndpointURL(for endpoint: String) -> URL {
+        if let endpointURL = configuration.endpointURL {
+            return endpointURL
+        }
+        return configuration.baseURL.appendingPathComponent(endpoint)
+    }
+
+    private func applyAdditionalHeaders(to request: inout URLRequest) {
+        if configuration.additionalHeaders.isEmpty {
+            return
+        }
+        for (key, value) in configuration.additionalHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
         }
     }
 }

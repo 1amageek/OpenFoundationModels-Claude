@@ -26,7 +26,7 @@ swift test --filter "ClaudeLanguageModelTests/modelInitialization"
 
 ### Core Components
 
-- **ClaudeLanguageModel** (`Sources/OpenFoundationModelsClaude/ClaudeLanguageModel.swift`): Main entry point implementing `LanguageModel` protocol. Provides `generate()` and `stream()` methods for interacting with Claude API. Contains static model identifiers (`sonnet4`, `opus4_5`, etc.) and factory methods.
+- **ClaudeLanguageModel** (`Sources/OpenFoundationModelsClaude/ClaudeLanguageModel.swift`): Main entry point implementing `LanguageModel` protocol. Provides `generate()` and `stream()` methods for interacting with Claude API. Contains static model identifiers (`opus4_6`, `sonnet4_5`, `haiku4_5`, etc.) and factory methods.
 
 - **ClaudeConfiguration** (`Sources/OpenFoundationModelsClaude/ClaudeConfiguration.swift`): Configuration struct holding API key, base URL, timeout, and API version. Supports initialization from environment variables via `fromEnvironment()`.
 

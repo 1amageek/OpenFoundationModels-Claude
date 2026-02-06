@@ -234,37 +234,45 @@ public final class ClaudeLanguageModel: LanguageModel, Sendable {
 // MARK: - Convenience Model Constants
 
 extension ClaudeLanguageModel {
-    // MARK: - Model Identifiers
+    // MARK: - Model Identifiers (Current)
 
-    /// Claude Opus 4.5 - Premium model combining maximum intelligence with practical performance
-    public static let opus4_5 = "claude-opus-4-5-20251101"
+    /// Claude Opus 4.6 - Most intelligent model for building agents and coding
+    public static let opus4_6 = "claude-opus-4-6"
 
-    /// Claude Sonnet 4.5 - Best model for real-world agents and coding
+    /// Claude Sonnet 4.5 - Best combination of speed and intelligence
     public static let sonnet4_5 = "claude-sonnet-4-5-20250929"
 
-    /// Claude Sonnet 4 - High-performance model with extended thinking
-    public static let sonnet4 = "claude-sonnet-4-20250514"
-
-    /// Claude Opus 4 - Most capable model
-    public static let opus4 = "claude-opus-4-20250514"
-
-    /// Claude Haiku 4.5 - Hybrid model, capable of near-instant responses and extended thinking
+    /// Claude Haiku 4.5 - Fastest model with near-frontier intelligence
     public static let haiku4_5 = "claude-haiku-4-5-20251001"
 
-    /// Claude 3.7 Sonnet - High-performance model with early extended thinking
+    // MARK: - Model Identifiers (Legacy)
+
+    /// Claude Opus 4.5 - Premium model combining maximum intelligence with practical performance (legacy)
+    public static let opus4_5 = "claude-opus-4-5-20251101"
+
+    /// Claude Opus 4.1 - High-capability model (legacy)
+    public static let opus4_1 = "claude-opus-4-1-20250805"
+
+    /// Claude Sonnet 4 - High-performance model with extended thinking (legacy)
+    public static let sonnet4 = "claude-sonnet-4-20250514"
+
+    /// Claude Opus 4 - Capable model (legacy)
+    public static let opus4 = "claude-opus-4-20250514"
+
+    /// Claude 3.7 Sonnet - High-performance model with early extended thinking (legacy)
     public static let sonnet3_7 = "claude-3-7-sonnet-20250219"
 
-    /// Claude 3.5 Haiku - Fastest and most compact model for near-instant responsiveness
+    /// Claude 3.5 Haiku - Fastest and most compact model for near-instant responsiveness (legacy)
     public static let haiku3_5 = "claude-3-5-haiku-20241022"
 
     /// Claude 3.5 Sonnet model identifier (legacy)
     public static let sonnet3_5 = "claude-3-5-sonnet-20241022"
 
-    // MARK: - Factory Methods
+    // MARK: - Factory Methods (Current)
 
-    /// Create Claude Opus 4.5 model
-    public static func opus4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: opus4_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
+    /// Create Claude Opus 4.6 model
+    public static func opus4_6(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: opus4_6, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
     /// Create Claude Sonnet 4.5 model
@@ -272,27 +280,39 @@ extension ClaudeLanguageModel {
         return ClaudeLanguageModel(configuration: configuration, modelName: sonnet4_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
-    /// Create Claude Sonnet 4 model
-    public static func sonnet4(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet4, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
-    }
-
-    /// Create Claude Opus 4 model
-    public static func opus4(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
-        return ClaudeLanguageModel(configuration: configuration, modelName: opus4, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
-    }
-
     /// Create Claude Haiku 4.5 model
     public static func haiku4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
         return ClaudeLanguageModel(configuration: configuration, modelName: haiku4_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
-    /// Create Claude 3.7 Sonnet model
+    // MARK: - Factory Methods (Legacy)
+
+    /// Create Claude Opus 4.5 model (legacy)
+    public static func opus4_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: opus4_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
+    }
+
+    /// Create Claude Opus 4.1 model (legacy)
+    public static func opus4_1(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: opus4_1, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
+    }
+
+    /// Create Claude Sonnet 4 model (legacy)
+    public static func sonnet4(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: sonnet4, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
+    }
+
+    /// Create Claude Opus 4 model (legacy)
+    public static func opus4(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
+        return ClaudeLanguageModel(configuration: configuration, modelName: opus4, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
+    }
+
+    /// Create Claude 3.7 Sonnet model (legacy)
     public static func sonnet3_7(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
         return ClaudeLanguageModel(configuration: configuration, modelName: sonnet3_7, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }
 
-    /// Create Claude 3.5 Haiku model
+    /// Create Claude 3.5 Haiku model (legacy)
     public static func haiku3_5(configuration: ClaudeConfiguration, defaultMaxTokens: Int = 4096, thinkingBudgetTokens: Int? = nil) -> ClaudeLanguageModel {
         return ClaudeLanguageModel(configuration: configuration, modelName: haiku3_5, defaultMaxTokens: defaultMaxTokens, thinkingBudgetTokens: thinkingBudgetTokens)
     }

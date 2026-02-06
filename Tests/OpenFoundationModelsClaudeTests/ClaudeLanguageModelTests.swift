@@ -100,17 +100,30 @@ struct ClaudeLanguageModelTests {
 
     @Test("All convenience model identifiers are correct")
     func allModelIdentifiers() {
-        #expect(ClaudeLanguageModel.opus4_5 == "claude-opus-4-5-20251101")
+        // Current models
+        #expect(ClaudeLanguageModel.opus4_6 == "claude-opus-4-6")
         #expect(ClaudeLanguageModel.sonnet4_5 == "claude-sonnet-4-5-20250929")
+        #expect(ClaudeLanguageModel.haiku4_5 == "claude-haiku-4-5-20251001")
+        // Legacy models
+        #expect(ClaudeLanguageModel.opus4_5 == "claude-opus-4-5-20251101")
+        #expect(ClaudeLanguageModel.opus4_1 == "claude-opus-4-1-20250805")
         #expect(ClaudeLanguageModel.sonnet4 == "claude-sonnet-4-20250514")
         #expect(ClaudeLanguageModel.opus4 == "claude-opus-4-20250514")
-        #expect(ClaudeLanguageModel.haiku4_5 == "claude-haiku-4-5-20251001")
         #expect(ClaudeLanguageModel.sonnet3_7 == "claude-3-7-sonnet-20250219")
         #expect(ClaudeLanguageModel.haiku3_5 == "claude-3-5-haiku-20241022")
         #expect(ClaudeLanguageModel.sonnet3_5 == "claude-3-5-sonnet-20241022")
     }
 
     // MARK: - Factory Method Tests
+
+    @Test("Factory method opus4_6 creates correct model")
+    func factoryOpus46() {
+        let config = ClaudeConfiguration(apiKey: "test-key")
+        let model = ClaudeLanguageModel.opus4_6(configuration: config)
+
+        #expect(model.modelName == ClaudeLanguageModel.opus4_6)
+        #expect(model.defaultMaxTokens == 4096)
+    }
 
     @Test("Factory method opus4_5 creates correct model")
     func factoryOpus45() {
@@ -127,6 +140,14 @@ struct ClaudeLanguageModelTests {
         let model = ClaudeLanguageModel.sonnet4_5(configuration: config)
 
         #expect(model.modelName == ClaudeLanguageModel.sonnet4_5)
+    }
+
+    @Test("Factory method opus4_1 creates correct model")
+    func factoryOpus41() {
+        let config = ClaudeConfiguration(apiKey: "test-key")
+        let model = ClaudeLanguageModel.opus4_1(configuration: config)
+
+        #expect(model.modelName == ClaudeLanguageModel.opus4_1)
     }
 
     @Test("Factory method sonnet4 creates correct model")

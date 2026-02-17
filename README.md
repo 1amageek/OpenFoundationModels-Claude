@@ -1,5 +1,16 @@
 # OpenFoundationModels-Claude
 
+> **Deprecated**: This package has been superseded by [**AnyFoundationModels**](https://github.com/1amageek/AnyFoundationModels). Please migrate to `ClaudeFoundationModels` from AnyFoundationModels for continued updates and support.
+>
+> ```swift
+> // Migration: Replace this
+> .package(url: "https://github.com/1amageek/OpenFoundationModels-Claude.git", from: "1.0.0")
+>
+> // With this
+> .package(url: "https://github.com/1amageek/AnyFoundationModels.git", branch: "main")
+> // Then use: .product(name: "ClaudeFoundationModels", package: "AnyFoundationModels", condition: .when(traits: ["Claude"]))
+> ```
+
 Claude API backend for [OpenFoundationModels](https://github.com/1amageek/OpenFoundationModels) - Use Anthropic Claude with Apple Foundation Models compatible interface.
 
 ## Overview

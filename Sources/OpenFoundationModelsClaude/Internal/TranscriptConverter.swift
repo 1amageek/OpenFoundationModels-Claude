@@ -38,9 +38,14 @@ internal struct TranscriptConverter {
                     pendingToolResults = []
                 }
 
-                // Convert prompt to user message
-                let content = extractText(from: prompt.segments)
-                messages.append(Message(role: .user, content: content))
+                // Convert prompt to user message (use content blocks when images are present)
+                let blocks = convertSegmentsToBlocks(prompt.segments)
+                if blocks.contains(where: { if case .image = $0 { return true } else { return false } }) {
+                    messages.append(Message(role: .user, content: blocks))
+                } else {
+                    let content = extractText(from: prompt.segments)
+                    messages.append(Message(role: .user, content: content))
+                }
 
             case .response(let response):
                 // Convert response to assistant message
@@ -134,10 +139,39 @@ internal struct TranscriptConverter {
             case .structure(let structuredSegment):
                 let content = structuredSegment.content
                 texts.append(formatGeneratedContent(content))
+
+            case .image:
+                break
             }
         }
 
         return texts.joined(separator: " ")
+    }
+
+    /// Convert segments to content blocks (supports text + image)
+    private static func convertSegmentsToBlocks(_ segments: [Transcript.Segment]) -> [ContentBlock] {
+        var blocks: [ContentBlock] = []
+
+        for segment in segments {
+            switch segment {
+            case .text(let textSegment):
+                blocks.append(.text(TextBlock(text: textSegment.content)))
+
+            case .structure(let structuredSegment):
+                let content = formatGeneratedContent(structuredSegment.content)
+                blocks.append(.text(TextBlock(text: content)))
+
+            case .image(let imageSegment):
+                switch imageSegment.source {
+                case .base64(let data, let mediaType):
+                    blocks.append(.image(ImageBlock(source: .base64(data: data, mediaType: mediaType))))
+                case .url(let url):
+                    blocks.append(.image(ImageBlock(source: .url(url.absoluteString))))
+                }
+            }
+        }
+
+        return blocks
     }
 
     /// Format GeneratedContent as string

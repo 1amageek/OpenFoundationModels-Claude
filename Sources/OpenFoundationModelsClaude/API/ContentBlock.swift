@@ -3,6 +3,7 @@ import Foundation
 /// Content block in messages (request)
 enum ContentBlock: Codable, Sendable {
     case text(TextBlock)
+    case image(ImageBlock)
     case toolUse(ToolUseBlock)
     case toolResult(ToolResultBlock)
     case thinking(ThinkingBlock)
@@ -20,6 +21,9 @@ enum ContentBlock: Codable, Sendable {
         case "text":
             let block = try TextBlock(from: decoder)
             self = .text(block)
+        case "image":
+            let block = try ImageBlock(from: decoder)
+            self = .image(block)
         case "tool_use":
             let block = try ToolUseBlock(from: decoder)
             self = .toolUse(block)
@@ -45,6 +49,8 @@ enum ContentBlock: Codable, Sendable {
         switch self {
         case .text(let block):
             try block.encode(to: encoder)
+        case .image(let block):
+            try block.encode(to: encoder)
         case .toolUse(let block):
             try block.encode(to: encoder)
         case .toolResult(let block):
@@ -65,6 +71,40 @@ struct TextBlock: Codable, Sendable {
     init(text: String) {
         self.type = "text"
         self.text = text
+    }
+}
+
+/// Image content block
+struct ImageBlock: Codable, Sendable {
+    let type: String
+    let source: ImageSource
+
+    init(source: ImageSource) {
+        self.type = "image"
+        self.source = source
+    }
+}
+
+/// Image source for Claude API
+struct ImageSource: Codable, Sendable {
+    let type: String
+    let mediaType: String?
+    let data: String?
+    let url: String?
+
+    static func base64(data: String, mediaType: String) -> ImageSource {
+        ImageSource(type: "base64", mediaType: mediaType, data: data, url: nil)
+    }
+
+    static func url(_ url: String) -> ImageSource {
+        ImageSource(type: "url", mediaType: nil, data: nil, url: url)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case mediaType = "media_type"
+        case data
+        case url
     }
 }
 
